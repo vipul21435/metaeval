@@ -399,7 +399,9 @@ Correlation with the mean expert rating of relevance, 95 % intervals:
 
 For `unigram_f1`, tau-b is 0.617 at system level and 0.205 within items: the same metric, the same ratings,
 a factor of three. The system-level interval, from 16 systems, runs from 0.079 to 0.874. For `bigram_f1` it is
-[-0.089, 0.807]; Deutsch, Dror and Roth report [-.09, .84] for ROUGE-2 at system level on these annotations.
+[-0.089, 0.807]. Deutsch, Dror and Roth report [-.09, .84] for ROUGE-2 F1 on these relevance ratings, also
+Kendall's tau at system level with Boot-Both; `bigram_f1` is not ROUGE-2 (no stemming, other tokens, best
+reference instead of the toolkit's handling of several), so the closeness is only indicative.
 `length` is the weakest at system level and within items, yet within systems (0.191) it is close to
 `unigram_f1` (0.204): longer summaries of one system tend to be rated more relevant.
 

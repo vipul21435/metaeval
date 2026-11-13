@@ -32,6 +32,14 @@ def test_tokens_and_overlap_scores_by_hand():
     assert summeval.ngram_f1(["a"], ["a"], 2) == 0.0
 
 
+def test_overlap_scores_do_not_stem_so_they_are_not_rouge():
+    # A stemmer would match runner/runners and runs/run; plain tokens match only "the".
+    candidate = summeval.tokens("The runner runs")
+    reference = summeval.tokens("the runners run")
+    assert summeval.ngram_f1(candidate, reference, 1) == pytest.approx(1 / 3)
+    assert summeval.ngram_f1(candidate, reference, 2) == 0.0
+
+
 def test_converted_record_loads_as_scores():
     row = {
         "id": "doc-1",
