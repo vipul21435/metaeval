@@ -24,9 +24,12 @@ from dataclasses import asdict, dataclass
 import numpy as np
 from numpy.typing import ArrayLike
 
-from metaeval.coefficients import COEFFICIENTS, rowwise
+from metaeval.coefficients import CALIBRATED, COEFFICIENTS, calibrate_ties, rowwise
 
-__all__ = ["GROUPINGS", "Correlation", "correlate", "statistic"]
+__all__ = ["GROUPINGS", "STATISTICS", "Correlation", "correlate", "statistic"]
+
+STATISTICS: tuple[str, ...] = (*COEFFICIENTS, CALIBRATED)
+"""Every name accepted as ``coefficient``: the coefficients and calibrated pairwise accuracy."""
 
 GROUPINGS: dict[str, str] = {
     "system": "system level: scores averaged over items, one point per system",
@@ -53,7 +56,9 @@ class Correlation:
     ``pooled``; for the grouped levels, the groups with at least two outputs that have
     both scores) and ``n_undefined`` the number of those in which the coefficient is
     undefined, typically because one side is constant. ``n_points`` counts what was
-    correlated: systems at system level, outputs otherwise.
+    correlated: systems at system level, outputs otherwise. ``epsilon`` is set for
+    calibrated pairwise accuracy only: the metric difference up to which two outputs
+    count as tied.
     """
 
     coefficient: str
@@ -63,6 +68,7 @@ class Correlation:
     n_groups: int
     n_undefined: int
     undefined: str
+    epsilon: float | None = None
 
     @property
     def label(self) -> str:
@@ -74,6 +80,8 @@ class Correlation:
         fields = asdict(self)
         fields["value"] = None if math.isnan(self.value) else self.value
         fields["label"] = self.label
+        if self.epsilon is None:
+            del fields["epsilon"]
         return fields
 
 
@@ -124,23 +132,31 @@ def correlate(
     metric, human:
         Arrays of shape ``(n_systems, n_items)``; ``nan`` marks a missing score.
     coefficient:
-        A key of :data:`metaeval.coefficients.COEFFICIENTS`.
+        One of :data:`STATISTICS`: a key of :data:`metaeval.coefficients.COEFFICIENTS`, or
+        ``"pairwise_accuracy_calibrated"`` for pairwise accuracy after tie calibration.
     grouping:
         A key of :data:`GROUPINGS`. There is no default: the number depends on it.
     undefined:
         What to do, at the grouped levels, with a group in which the coefficient is
         undefined: ``"skip"`` leaves it out of the average, ``"zero"`` counts it as 0.
     """
-    if coefficient not in COEFFICIENTS:
-        raise ValueError(f"unknown coefficient {coefficient!r}; choose from {sorted(COEFFICIENTS)}")
+    if coefficient not in STATISTICS:
+        raise ValueError(f"unknown coefficient {coefficient!r}; choose from {sorted(STATISTICS)}")
     if grouping not in GROUPINGS:
         raise ValueError(f"unknown grouping {grouping!r}; choose from {list(GROUPINGS)}")
     if undefined not in ("skip", "zero"):
         raise ValueError(f"undefined must be 'skip' or 'zero', got {undefined!r}")
     m, h, paired = _matrices(metric, human)
-    value, n_points, n_groups, n_undefined = _evaluate(
-        m, h, paired, coefficient, grouping, undefined
-    )
+    epsilon = None
+    if coefficient == CALIBRATED:
+        threshold, value, _, n_groups, _ = calibrate_ties(*_rows(m, h, paired, grouping))
+        n_points = _evaluate(m, h, paired, "pairwise_accuracy", grouping, undefined)[1]
+        n_undefined = 0
+        epsilon = None if math.isnan(threshold) else threshold
+    else:
+        value, n_points, n_groups, n_undefined = _evaluate(
+            m, h, paired, coefficient, grouping, undefined
+        )
     return Correlation(
         coefficient=coefficient,
         grouping=grouping,
@@ -149,7 +165,24 @@ def correlate(
         n_groups=n_groups,
         n_undefined=n_undefined,
         undefined=undefined,
+        epsilon=epsilon,
     )
+
+
+def _rows(
+    m: np.ndarray, h: np.ndarray, paired: np.ndarray, grouping: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """The groups of a grouping as rows, with ``nan`` where a score is missing."""
+    if grouping == "system":
+        counts = paired.sum(axis=1)
+        rated = counts > 0
+        x = _merge_near_ties(np.where(paired, m, 0.0).sum(axis=1)[rated] / counts[rated])
+        y = _merge_near_ties(np.where(paired, h, 0.0).sum(axis=1)[rated] / counts[rated])
+        return x[None, :], y[None, :]
+    if grouping == "pooled":
+        return m[paired][None, :], h[paired][None, :]
+    x, y = np.where(paired, m, np.nan), np.where(paired, h, np.nan)
+    return (x.T, y.T) if grouping == "by_item" else (x, y)
 
 
 def _evaluate(
@@ -161,6 +194,9 @@ def _evaluate(
     undefined: str,
 ) -> tuple[float, int, int, int]:
     """Value, points, groups and undefined groups for validated arrays."""
+    if coefficient == CALIBRATED:
+        _, value, _, n_groups, n_pairs = calibrate_ties(*_rows(m, h, paired, grouping))
+        return value, n_pairs, n_groups, 0
     if grouping in ("system", "pooled"):
         if grouping == "system":
             counts = paired.sum(axis=1)

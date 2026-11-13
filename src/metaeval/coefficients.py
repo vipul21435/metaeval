@@ -19,8 +19,10 @@ import numpy as np
 from numpy.typing import ArrayLike
 
 __all__ = [
+    "CALIBRATED",
     "COEFFICIENTS",
     "PairCounts",
+    "calibrate_ties",
     "kendall_tau_b",
     "kendall_tau_c",
     "pair_counts",
@@ -336,3 +338,73 @@ def _distinct(sign: np.ndarray, both: np.ndarray, valid: np.ndarray) -> np.ndarr
     earlier = np.tril(np.ones((n, n), dtype=bool), k=-1)
     repeats = (both & (sign == 0) & earlier).any(axis=2)
     return (valid & ~repeats).sum(axis=1)
+
+
+CALIBRATED = "pairwise_accuracy_calibrated"
+"""Name of pairwise accuracy after tie calibration, accepted wherever a coefficient is."""
+
+_PAIR_LIMIT = 30_000_000
+
+
+def calibrate_ties(x: ArrayLike, y: ArrayLike) -> tuple[float, float, float, int, int]:
+    """Tie calibration of Deutsch, Foster and Freitag (2023) for pairwise accuracy.
+
+    ``x`` (metric) and ``y`` (human) are ``(groups, n)`` arrays with ``nan`` for missing
+    cells. Two metric scores of a group count as tied when they differ by at most
+    ``epsilon``; every absolute difference between two metric scores of a group, and
+    zero, is a candidate, and the one that gives the highest pairwise accuracy, averaged
+    over groups, is chosen (the smallest such value). One ``epsilon`` serves all groups.
+
+    Returns ``(epsilon, accuracy, accuracy without calibration, groups, pairs)``, where
+    groups are the rows with at least two points.
+    """
+    a = np.asarray(x, dtype=float)
+    b = np.asarray(y, dtype=float)
+    if a.ndim != 2 or a.shape != b.shape:
+        raise ValueError("calibrate_ties needs two arrays of the same two-dimensional shape")
+    groups, n = a.shape
+    if groups * n * (n - 1) // 2 > _PAIR_LIMIT:
+        raise ValueError(
+            f"tie calibration compares all pairs within a group; {groups} group(s) of {n} "
+            "outputs are too many pairs, use a grouped level"
+        )
+    valid = ~np.isnan(a) & ~np.isnan(b)
+    first, second = np.triu_indices(n, k=1)
+    in_pair = valid[:, first] & valid[:, second]
+    per_group = in_pair.sum(axis=1)
+    n_groups = int(np.count_nonzero(per_group))
+    n_pairs = int(per_group.sum())
+    if n_pairs == 0:
+        return math.nan, math.nan, math.nan, 0, 0
+    a = np.where(valid, a, 0.0)
+    b = np.where(valid, b, 0.0)
+    dx = (a[:, first] - a[:, second])[in_pair]
+    dy = (b[:, first] - b[:, second])[in_pair]
+    # A pair weighs 1 / (pairs of its group * number of groups), so that the sums below
+    # are pairwise accuracies averaged over groups. When all groups have the same
+    # number of pairs the sums are kept as integer counts and divided once at the end.
+    sizes = per_group[per_group > 0]
+    if (sizes == sizes[0]).all():
+        weight = np.ones(n_pairs, dtype=np.int64)
+        divisor = float(sizes[0]) * n_groups
+    else:
+        weight = np.broadcast_to(
+            (1.0 / (np.maximum(per_group, 1) * n_groups))[:, None], in_pair.shape
+        )
+        weight = weight[in_pair]
+        divisor = 1.0
+    distance = np.abs(dx)
+    order = np.argsort(distance, kind="stable")
+    distance = distance[order]
+    tied_human = np.cumsum((weight * (dy == 0))[order])
+    concordant = np.cumsum((weight * (dx * dy > 0))[order])
+    # With threshold e a pair is right when the humans tie it and its distance is at
+    # most e, or when it is concordant and its distance is above e.
+    last = np.flatnonzero(np.append(distance[1:] != distance[:-1], True))
+    candidates = distance[last]
+    accuracy = (tied_human[last] + (concordant[-1] - concordant[last])) / divisor
+    if candidates[0] > 0:
+        candidates = np.concatenate(([0.0], candidates))
+        accuracy = np.concatenate(([concordant[-1] / divisor], accuracy))
+    best = int(np.argmax(np.round(accuracy, 12)))
+    return float(candidates[best]), float(accuracy[best]), float(accuracy[0]), n_groups, n_pairs

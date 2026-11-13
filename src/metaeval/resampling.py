@@ -16,8 +16,7 @@ from dataclasses import asdict, dataclass
 import numpy as np
 from numpy.typing import ArrayLike
 
-from metaeval.coefficients import COEFFICIENTS
-from metaeval.grouping import GROUPINGS, _matrices, statistic
+from metaeval.grouping import GROUPINGS, STATISTICS, _matrices, statistic
 
 __all__ = [
     "RESAMPLE",
@@ -40,8 +39,8 @@ RESAMPLE: dict[str, str] = {
 
 
 def _check(coefficient: str, grouping: str, resample: str, n_resamples: int) -> None:
-    if coefficient not in COEFFICIENTS:
-        raise ValueError(f"unknown coefficient {coefficient!r}; choose from {sorted(COEFFICIENTS)}")
+    if coefficient not in STATISTICS:
+        raise ValueError(f"unknown coefficient {coefficient!r}; choose from {sorted(STATISTICS)}")
     if grouping not in GROUPINGS:
         raise ValueError(f"unknown grouping {grouping!r}; choose from {list(GROUPINGS)}")
     if resample not in RESAMPLE:
