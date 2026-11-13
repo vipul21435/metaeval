@@ -569,3 +569,40 @@ def test_invalid_resampling_options(capsys, panel):
     assert (status, err) == (2, "metaeval: error: --resamples must not be negative\n")
     status, _, err = run(capsys, "correlate", panel, "--confidence", "1.5")
     assert (status, err) == (2, "metaeval: error: --confidence must be between 0 and 1\n")
+
+
+def test_annotators_without_ratings_are_not_counted(capsys, tmp_path):
+    # ann_3 appears in every record but never gives a rating.
+    lines = []
+    for system in range(3):
+        for item in range(4):
+            rating = HUMAN[system, item]
+            record = {
+                "item": f"doc_{item}",
+                "system": f"sys_{system}",
+                "human": {"ann_1": rating, "ann_2": 6 - rating if item else rating, "ann_3": None},
+                "metrics": {"m": METRIC[system, item]},
+            }
+            lines.append(json.dumps(record))
+    path = tmp_path / "empty_annotator.jsonl"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    status, out, _ = run(
+        capsys, "correlate", path, "--grouping", "pooled", "--coefficient", "pearson"
+    )
+    assert status == 0
+    assert (
+        "- human score: mean of 2 annotators (ann_1, ann_2), dimension 'overall'; "
+        "no ratings from ann_3" in out
+    )
+    status, out, _ = run(capsys, "ceiling", path, "--grouping", "pooled", "--format", "json")
+    document = json.loads(out)
+    assert document["human"]["annotators"] == ["ann_1", "ann_2"]
+    assert document["human"]["annotators_without_ratings"] == ["ann_3"]
+    assert document["ceiling"][0]["annotators"] == ["ann_1", "ann_2"]
+    assert len(document["ceiling"][0]["per_annotator"]) == 2
+    # With every annotator rating, nothing is reported apart.
+    status, out, _ = run(capsys, "correlate", path, "--annotators", "ann_[12]", "--format", "json")
+    assert "annotators_without_ratings" not in json.loads(out)["human"]
+    status, _, err = run(capsys, "correlate", path, "--annotators", "ann_3")
+    assert (status, err) == (2, "metaeval: error: the chosen annotators gave no ratings\n")

@@ -174,6 +174,7 @@ class _Context:
     table: ScoreTable
     dimension: str
     annotators: tuple[str, ...]
+    unrated: tuple[str, ...]
     human: np.ndarray
     ratings: np.ndarray
     metrics: list[str]
@@ -200,7 +201,8 @@ class _Context:
             f"- scores: {args.scores} ({len(self.table.systems)} systems, "
             f"{len(self.table.items)} items)",
             f"- human score: mean of {len(self.annotators)} annotator{plural} "
-            f"({', '.join(self.annotators)}), dimension {self.dimension!r}",
+            f"({', '.join(self.annotators)}), dimension {self.dimension!r}"
+            + (f"; no ratings from {', '.join(self.unrated)}" if self.unrated else ""),
         ]
         if self.intervals:
             lines.append(
@@ -213,15 +215,18 @@ class _Context:
 
     def describe(self) -> dict[str, object]:
         args = self.args
+        human: dict[str, object] = {
+            "dimension": self.dimension,
+            "annotators": list(self.annotators),
+            "aggregate": "mean",
+        }
+        if self.unrated:
+            human["annotators_without_ratings"] = list(self.unrated)
         return {
             "scores": args.scores,
             "systems": len(self.table.systems),
             "items": len(self.table.items),
-            "human": {
-                "dimension": self.dimension,
-                "annotators": list(self.annotators),
-                "aggregate": "mean",
-            },
+            "human": human,
             "resampling": self.resampling() if self.intervals else None,
         }
 
@@ -242,13 +247,20 @@ def _context(args: argparse.Namespace) -> _Context:
         raise KeyError("the file has no metric scores")
     for metric in metrics:
         table.metric(metric)
-    annotators = table.annotators(args.dimension, args.annotators)
+    chosen = table.annotators(args.dimension, args.annotators)
     dimension = args.dimension if args.dimension is not None else table.dimensions[0]
+    # An annotator can be named in the file without a single rating in this dimension;
+    # such an annotator adds nothing to the mean and is reported apart.
+    unrated = tuple(name for name in chosen if np.isnan(table.ratings[dimension][name]).all())
+    annotators = tuple(name for name in chosen if name not in unrated)
+    if not annotators:
+        raise KeyError("the chosen annotators gave no ratings")
     return _Context(
         args=args,
         table=table,
         dimension=dimension,
         annotators=annotators,
+        unrated=unrated,
         human=table.human(dimension, annotators),
         ratings=np.stack([table.ratings[dimension][name] for name in annotators]),
         metrics=metrics,
