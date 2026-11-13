@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import math
+import warnings
 
 import numpy as np
 import pytest
+from scipy import stats
 
 from metaeval.coefficients import COEFFICIENTS
 from metaeval.grouping import GROUPINGS, Correlation, _merge_near_ties, correlate
@@ -90,6 +92,61 @@ def test_grouped_value_is_the_mean_of_per_group_coefficients():
         assert value(metric, human, name, "system") == pytest.approx(
             function(metric.mean(axis=1), human.mean(axis=1))
         )
+
+
+SCIPY_REFERENCE = {
+    "pearson": lambda x, y: stats.pearsonr(x, y).statistic,
+    "spearman": lambda x, y: stats.spearmanr(x, y).statistic,
+    "kendall_b": lambda x, y: stats.kendalltau(x, y, variant="b").statistic,
+    "kendall_c": lambda x, y: stats.kendalltau(x, y, variant="c").statistic,
+}
+
+
+def reference(metric, human, coefficient: str, grouping: str) -> float:
+    """The four groupings written out plainly on top of scipy, for comparison."""
+    function = SCIPY_REFERENCE[coefficient]
+    both = np.isfinite(metric) & np.isfinite(human)
+
+    def one(x, y) -> float:
+        if len(x) < 2:
+            return math.nan
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return float(function(x, y))
+
+    if grouping == "pooled":
+        return one(metric[both], human[both])
+    if grouping == "system":
+        rows = [i for i in range(metric.shape[0]) if both[i].any()]
+        # Rounded so that equal means stay equal whatever the order of summation.
+        x = [round(float(metric[i, both[i]].mean()), 12) for i in rows]
+        y = [round(float(human[i, both[i]].mean()), 12) for i in rows]
+        return one(x, y)
+    if grouping == "by_item":
+        metric, human, both = metric.T, human.T, both.T
+    per_group = [one(metric[i, both[i]], human[i, both[i]]) for i in range(metric.shape[0])]
+    defined = [group for group in per_group if not math.isnan(group)]
+    return float(np.mean(defined)) if defined else math.nan
+
+
+def test_groupings_match_a_scipy_reference_with_missing_scores():
+    rng = np.random.default_rng(8)
+    compared = 0
+    for _ in range(40):
+        shape = (int(rng.integers(2, 7)), int(rng.integers(2, 9)))
+        metric = np.round(rng.normal(size=shape), 1)
+        human = rng.integers(1, 5, size=shape).astype(float)
+        metric[rng.random(shape) < 0.15] = np.nan
+        human[rng.random(shape) < 0.15] = np.nan
+        for coefficient in SCIPY_REFERENCE:
+            for grouping in GROUPINGS:
+                expected = reference(metric, human, coefficient, grouping)
+                ours = value(metric, human, coefficient, grouping)
+                # The rounding of the reference's system means moves Pearson a little.
+                tolerance = 1e-9 if grouping == "system" else 1e-12
+                assert ours == pytest.approx(expected, abs=tolerance, nan_ok=True)
+                compared += not math.isnan(expected)
+    assert compared > 500
 
 
 def test_reordering_systems_and_items_changes_nothing():
