@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "metaeval"
-version = "0.1.0"
+version = "0.1.1"
 description = "Correlate automatic metric or grader scores with human ratings, with the grouping stated and an interval on every number."
 readme = "README.md"
 requires-python = ">=3.10"

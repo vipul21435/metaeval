@@ -40,7 +40,7 @@ from metaeval.resampling import (
 from metaeval.significance import WilliamsTest, williams, williams_test
 from metaeval.table import ScoreFormatError, ScoreTable, load_scores
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 __all__ = [
     "CALIBRATED",
