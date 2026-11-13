@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -277,6 +278,15 @@ def test_version(capsys):
         main(["--version"])
     assert raised.value.code == 0
     assert capsys.readouterr().out == f"metaeval {__version__}\n"
+
+
+def test_python_dash_m_runs_the_command(capsys, grid, monkeypatch):
+    arguments = ["correlate", str(grid), "--grouping", "system", "--coefficient", "pearson"]
+    monkeypatch.setattr(sys, "argv", ["metaeval", *arguments])
+    with pytest.raises(SystemExit) as raised:
+        runpy.run_module("metaeval", run_name="__main__")
+    assert raised.value.code == 0
+    assert table_rows(capsys.readouterr().out)[2] == ["follows", "system", "1.000", "3", "1"]
 
 
 def test_module_entry_point_on_the_example_file():
