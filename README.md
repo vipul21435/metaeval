@@ -534,8 +534,8 @@ metaeval scale summeval_scores.jsonl --dimension relevance --annotators 'expert_
 | crowd_relevance | 0.003 | 0.028 | 0.168 | 0.623 | 0.180 |
 | human | 0.007 | 0.075 | 0.226 | 0.523 | 0.169 |
 
-The mean crowd rating is within one point of the mean expert rating on 85 % of the summaries, and the quadratic
-weighted kappa is 0.057 [-0.030, 0.134]: both mostly say 4. The crowd uses the lower end less (3.1 % at 1 or 2
+After rounding both to the 1 to 5 scale, the mean crowd rating is within one point of the mean expert rating on
+85 % of the summaries, and the quadratic weighted kappa is 0.057 [-0.030, 0.134]: both mostly say 4. The crowd uses the lower end less (3.1 % at 1 or 2
 against 8.2 %) and has a narrower spread (ratio 0.840). Adjacent agreement alone would have looked reassuring.
 
 ### Ties

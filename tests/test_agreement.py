@@ -128,6 +128,16 @@ def test_scale_audit_by_hand():
     assert as_dict["exact"] == audit.exact
 
 
+def test_agreement_in_the_audit_is_computed_after_rounding_to_the_scale():
+    # 2.6 against 4.4 is 1.8 apart as given, but rounds to 3 against 4: adjacent.
+    # 3.4 against 4.6 is 1.2 apart and rounds to 3 against 5: not adjacent.
+    audit = scale_audit([2.6, 3.4], [4.4, 4.6], low=1, high=5)
+    assert audit.adjacent == 0.5
+    assert audit.exact == 0.0
+    assert adjacent_agreement([2.6, 3.4], [4.4, 4.6]) == 0.0
+    assert audit.mean_signed_difference == pytest.approx(-1.5)
+
+
 def test_scale_audit_defaults_and_edge_cases():
     human = np.array([[2.0, 3.0, 4.0, NAN]])
     grader = np.array([[2.0, 3.0, 5.0, 1.0]])
