@@ -337,6 +337,22 @@ def test_exchanging_outputs_is_fine_without_errors_per_system():
     assert rejection_rate("auto", "system", per_system=0.0) < 0.12
 
 
+def test_paired_bootstrap_rarely_rejects_equally_good_metrics():
+    # The paired bootstrap over systems and items is conservative: for two equally good
+    # metrics it stays below the nominal 5 %, with or without errors per system.
+    for per_system in (0.0, 1.0):
+        rejections = 0
+        for trial in range(40):
+            a, b, human = equally_good_metrics(
+                np.random.default_rng(700 + trial), per_system=per_system
+            )
+            result = paired_bootstrap(
+                a, b, human, coefficient="pearson", grouping="system", n_resamples=59, seed=trial
+            )
+            rejections += result.p_value <= 0.05
+        assert rejections / 40 <= 0.05
+
+
 def test_permutation_test_undefined():
     human = np.array([[1.0, 2.0], [2.0, 3.0]])
     result = permutation_test(

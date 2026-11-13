@@ -230,7 +230,8 @@ counted in the JSON output.
 
 - Paired bootstrap: both metrics on the same resamples; the interval is the percentile interval of the
   difference, and the two-sided p value is twice the smaller share of resampled differences on either side of
-  zero (one added to the count and to the number of resamples).
+  zero (one added to the count and to the number of resamples). This test is conservative and has less power
+  than the others (next section): a large p value from it is weak evidence that two metrics are equal.
 - Permutation test: both metrics are standardised and their scores exchanged with probability one half; the
   p value is the share of permutations with a difference at least as large in absolute value. What is
   exchanged, whole systems, whole items or single outputs, decides what the test assumes; see the next section.
@@ -315,6 +316,11 @@ With 80 tables a rate near 0.05 has a standard error of about 0.02.
   in `b errs per system` in 82.5 % of tables at system level with Pearson and 55.0 % with tau-b.
 - The Williams test keeps its level at system level, where it also has the most power, and rejects 40.0 % and
   28.7 % of equally good pairs at the pooled level, where outputs of one system or item are not independent.
+- The paired bootstrap rejects between 0.0 % and 2.5 % of equally good pairs, well below the nominal 5 %, and
+  finds a worse metric less often than the permutation test. In `b errs per system` at system level it rejects
+  5.0 % against 55.0 % with tau-b and 70.0 % against 82.5 % with Pearson, and pooled 10.0 % against 33.8 %; in
+  `b is worse` with tau-b, 73.8 % against 97.5 %. Deutsch, Dror and Roth report a power near 0 for Boot-Both at
+  system level in their experiments.
 
 ### Ordinal agreement and scale use
 
@@ -440,7 +446,9 @@ metaeval compare summeval_scores.jsonl --dimension relevance --annotators 'exper
 
 The permutation test exchanges whole systems at both levels. At system level no test separates any two of
 the four metrics: the permutation p values run from 0.302 to 0.589 and every bootstrap interval for a
-difference includes zero. With 16 systems the data cannot tell unigram overlap from summary length (0.617
+difference includes zero. The bootstrap column adds little evidence: that test rarely rejects even when a
+metric is worse (see the simulation), so "none of the six differences is significant" by it is a weak
+statement. With 16 systems the data cannot tell unigram overlap from summary length (0.617
 against 0.233, p = 0.312). Within items the permutation test separates `unigram_f1` from `bigram_f1`
 (p = 0.013) and from `lcs_f1` (p = 0.029), and nothing else; `unigram_f1` against `length`, the largest
 difference there (0.099), has p = 0.221. Twelve tests were run without a correction for multiple comparisons;
@@ -558,8 +566,10 @@ reflects how many pairs the experts tie, not skill at ordering summaries; tau-b 
   and only one seed (0); the intervals carry Monte Carlo error from 1,000 resamples.
 - Percentile intervals only; no BCa or studentised intervals. With few systems, many system resamples repeat a
   system, which adds ties, and a resample can leave the statistic undefined (counted, then left out).
-- The paired bootstrap p value is read off the resampled differences without studentising, and no correction
-  for multiple comparisons is applied when several pairs of metrics are tested.
+- The paired bootstrap is conservative and has little power: in the simulation above it rejected at most
+  2.5 % of equally good pairs at a nominal 5 % and found worse metrics less often than the permutation test.
+  Its p value is read off the resampled differences without studentising.
+- No correction for multiple comparisons is applied when several pairs of metrics are tested.
 - The Williams test is offered at system and pooled level only and assumes normal scores. At pooled level it
   ignores that outputs of one system or item are dependent: in the simulation above it rejected 40.0 % and
   28.7 % of equally good pairs there. Read it at system level.
