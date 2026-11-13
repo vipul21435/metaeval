@@ -328,9 +328,12 @@ With 80 tables a rate near 0.05 has a standard error of about 0.02.
 (halves upwards) for exact agreement, adjacent agreement (within one step) and quadratic weighted kappa
 (Cohen, 1968, "Weighted kappa: Nominal scale agreement with provision for scaled disagreement or partial
 credit", Psychological Bulletin 70(4), 213-220; formula as on the
-[Wikipedia page for Cohen's kappa](https://en.wikipedia.org/wiki/Cohen%27s_kappa) with weights `(i - j)^2`; the
-tests compare against
-[`sklearn.metrics.cohen_kappa_score`](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.cohen_kappa_score.html)).
+[Wikipedia page for Cohen's kappa](https://en.wikipedia.org/wiki/Cohen%27s_kappa) with weights `(i - j)^2`).
+The weights are taken on the score values, so two points of the scale are as far apart as their values say even
+when a point between them is never used.
+[`sklearn.metrics.cohen_kappa_score`](https://scikit-learn.org/stable/modules/generated/sklearn.metrics.cohen_kappa_score.html)
+gives the same number only when the points of the scale are passed as `labels`; with its default it indexes the
+values that occur and can differ when a point is unused. The tests compare against it with `labels` set.
 The mean signed difference is grader minus human on the scores as given. The audit also prints the distribution
 over the scale for grader and humans, the share of scores at the centre of the scale, the ratio of standard
 deviations (range restriction), the share of tied pairs of outputs, and the number of distinct values used.

@@ -50,6 +50,20 @@ def test_quadratic_weighted_kappa_matches_sklearn():
         assert quadratic_weighted_kappa(grader, human) == pytest.approx(expected, abs=1e-12)
 
 
+def test_kappa_weights_follow_scale_values_even_when_a_point_is_unused():
+    # Nobody uses 3 on this 1-4 scale. The weights here come from the score values, so
+    # 2 and 4 are two steps apart. sklearn with its default labels indexes the values
+    # that occur, which makes 2 and 4 neighbours and gives a different kappa; with the
+    # scale points passed as labels it agrees.
+    grader = [1, 2, 4, 4, 2, 1, 4, 2]
+    human = [1, 4, 4, 2, 2, 2, 1, 1]
+    ours = quadratic_weighted_kappa(grader, human)
+    on_scale = cohen_kappa_score(grader, human, weights="quadratic", labels=[1, 2, 3, 4])
+    observed_only = cohen_kappa_score(grader, human, weights="quadratic")
+    assert ours == pytest.approx(on_scale, abs=1e-12)
+    assert abs(ours - observed_only) > 0.01
+
+
 def test_simple_agreement_measures():
     grader = np.array([[1, 2, 3], [5, 3, NAN]])
     human = np.array([[1, 3, 5], [4, NAN, 2]])
