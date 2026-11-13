@@ -182,6 +182,15 @@ def test_constant_vector_with_inexact_mean_is_undefined():
     assert math.isnan(spearman([0.1, 0.1, 0.1], [1.0, 2.0, 3.0]))
 
 
+def test_pearson_does_not_depend_on_the_scale():
+    # The squared deviations of the first vector underflow to zero and those of the
+    # second overflow if they are not rescaled first.
+    expected = pearson([1, 2, 4], [1, 2, 3])
+    assert pearson([1e-200, 2e-200, 4e-200], [1, 2, 3]) == pytest.approx(expected)
+    assert pearson([1e200, 2e200, 4e200], [1, 2, 3]) == pytest.approx(expected)
+    assert pearson([1e-200, 2e-200, 4e-200], [1e200, 2e200, 3e200]) == pytest.approx(expected)
+
+
 @pytest.mark.parametrize("name", sorted(COEFFICIENTS))
 def test_invalid_input_raises(name):
     function = COEFFICIENTS[name]

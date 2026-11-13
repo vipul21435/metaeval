@@ -63,10 +63,12 @@ def _pearson(a: np.ndarray, b: np.ndarray) -> float:
         return math.nan
     da = a - a.mean()
     db = b - b.mean()
-    denominator = math.sqrt(float(da @ da) * float(db @ db))
-    if denominator == 0.0:
-        return math.nan
-    return float(min(1.0, max(-1.0, float(da @ db) / denominator)))
+    # Scale the deviations to a largest magnitude of 1 so that their squares neither
+    # underflow nor overflow; the correlation does not depend on the scale.
+    da = da / np.abs(da).max()
+    db = db / np.abs(db).max()
+    ratio = float(da @ db) / math.sqrt(float(da @ da) * float(db @ db))
+    return min(1.0, max(-1.0, ratio))
 
 
 def spearman(x: ArrayLike, y: ArrayLike) -> float:
