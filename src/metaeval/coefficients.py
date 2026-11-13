@@ -26,6 +26,7 @@ __all__ = [
     "pair_counts",
     "pairwise_accuracy",
     "pearson",
+    "rowwise",
     "spearman",
 ]
 
@@ -222,3 +223,116 @@ COEFFICIENTS: dict[str, Callable[[ArrayLike, ArrayLike], float]] = {
     "pairwise_accuracy": pairwise_accuracy,
 }
 """Coefficient functions by the name used in the command line and in results."""
+
+_BLOCK_ENTRIES = 4_000_000
+"""Largest ``groups * n * n`` work array that :func:`rowwise` builds at once."""
+
+
+def rowwise(name: str, x: ArrayLike, y: ArrayLike) -> np.ndarray:
+    """Coefficient ``name`` for every row of two ``(groups, n)`` arrays at once.
+
+    A cell that is ``nan`` in either array is missing and is left out of its row. The
+    result has one value per row, ``nan`` where the coefficient is undefined, and agrees
+    with calling the one-dimensional function on each row. Short rows are handled
+    together by comparing all pairs of a row (``O(n^2)`` per row, vectorised over rows);
+    rows too long for that are passed one at a time to the sort-based functions.
+    """
+    if name not in COEFFICIENTS:
+        raise ValueError(f"unknown coefficient {name!r}; choose from {sorted(COEFFICIENTS)}")
+    a = np.asarray(x, dtype=float)
+    b = np.asarray(y, dtype=float)
+    if a.ndim != 2 or a.shape != b.shape:
+        raise ValueError("rowwise needs two arrays of the same two-dimensional shape")
+    if np.isinf(a).any() or np.isinf(b).any():
+        raise ValueError("scores must not be infinite")
+    valid = ~np.isnan(a) & ~np.isnan(b)
+    groups, n = a.shape
+    result = np.full(groups, np.nan)
+    if groups == 0 or n < 2:
+        return result
+    if n * n > _BLOCK_ENTRIES:
+        function = COEFFICIENTS[name]
+        for row in range(groups):
+            keep = valid[row]
+            result[row] = function(a[row, keep], b[row, keep])
+        return result
+    step = max(1, _BLOCK_ENTRIES // (n * n))
+    for start in range(0, groups, step):
+        rows = slice(start, start + step)
+        result[rows] = _rowwise_block(name, a[rows], b[rows], valid[rows])
+    return result
+
+
+def _pearson_rows(a: np.ndarray, b: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    size = valid.sum(axis=1)
+    count = np.maximum(size, 1)
+    a = np.where(valid, a, 0.0)
+    b = np.where(valid, b, 0.0)
+    da = np.where(valid, a - (a.sum(axis=1) / count)[:, None], 0.0)
+    db = np.where(valid, b - (b.sum(axis=1) / count)[:, None], 0.0)
+    constant = (
+        (size < 2)
+        | (np.where(valid, a, -np.inf).max(axis=1) == np.where(valid, a, np.inf).min(axis=1))
+        | (np.where(valid, b, -np.inf).max(axis=1) == np.where(valid, b, np.inf).min(axis=1))
+    )
+    scale_a = np.abs(da).max(axis=1)
+    scale_b = np.abs(db).max(axis=1)
+    da = da / np.where(scale_a > 0, scale_a, 1.0)[:, None]
+    db = db / np.where(scale_b > 0, scale_b, 1.0)[:, None]
+    denominator = np.sqrt((da * da).sum(axis=1) * (db * db).sum(axis=1))
+    undefined = constant | (denominator == 0)
+    ratio = (da * db).sum(axis=1) / np.where(undefined, 1.0, denominator)
+    return np.where(undefined, np.nan, np.clip(ratio, -1.0, 1.0))
+
+
+def _rowwise_block(name: str, a: np.ndarray, b: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    if name == "pearson":
+        return _pearson_rows(a, b, valid)
+    n = a.shape[1]
+    a = np.where(valid, a, 0.0)
+    b = np.where(valid, b, 0.0)
+    # sign[g, i, j] is the sign of value i minus value j in row g.
+    sign_x = np.sign(a[:, :, None] - a[:, None, :]).astype(np.int8)
+    sign_y = np.sign(b[:, :, None] - b[:, None, :]).astype(np.int8)
+    both = valid[:, :, None] & valid[:, None, :]
+    if name == "spearman":
+        return _pearson_rows(
+            _ranks_from_signs(sign_x, both), _ranks_from_signs(sign_y, both), valid
+        )
+
+    pairs = both & np.triu(np.ones((n, n), dtype=bool), k=1)
+    product = sign_x * sign_y
+    concordant = (pairs & (product > 0)).sum(axis=(1, 2))
+    discordant = (pairs & (product < 0)).sum(axis=(1, 2))
+    tied_both = (pairs & (sign_x == 0) & (sign_y == 0)).sum(axis=(1, 2))
+    size = valid.sum(axis=1)
+    total = size * (size - 1) // 2
+    difference = (concordant - discordant).astype(float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        if name == "pairwise_accuracy":
+            return np.where(total > 0, (concordant + tied_both) / total, np.nan)
+        if name == "kendall_b":
+            tied_x = (pairs & (sign_x == 0)).sum(axis=(1, 2)) - tied_both
+            tied_y = (pairs & (sign_y == 0)).sum(axis=(1, 2)) - tied_both
+            untied = concordant + discordant
+            product_of_sums = (untied + tied_x).astype(float) * (untied + tied_y)
+            return np.where(product_of_sums > 0, difference / np.sqrt(product_of_sums), np.nan)
+        # kendall_c
+        m = np.minimum(_distinct(sign_x, both, valid), _distinct(sign_y, both, valid))
+        scale = size.astype(float) ** 2 * (m - 1)
+        return np.where(m > 1, 2.0 * difference * m / np.where(m > 1, scale, 1.0), np.nan)
+
+
+def _ranks_from_signs(sign: np.ndarray, both: np.ndarray) -> np.ndarray:
+    """Average ranks within each row: values below, plus half of the tie group."""
+    below = (both & (sign > 0)).sum(axis=2)
+    equal = (both & (sign == 0)).sum(axis=2)
+    return below + (equal + 1) / 2.0
+
+
+def _distinct(sign: np.ndarray, both: np.ndarray, valid: np.ndarray) -> np.ndarray:
+    """Number of distinct valid values in each row."""
+    n = sign.shape[1]
+    earlier = np.tril(np.ones((n, n), dtype=bool), k=-1)
+    repeats = (both & (sign == 0) & earlier).any(axis=2)
+    return (valid & ~repeats).sum(axis=1)

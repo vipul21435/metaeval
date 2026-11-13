@@ -24,9 +24,9 @@ from dataclasses import asdict, dataclass
 import numpy as np
 from numpy.typing import ArrayLike
 
-from metaeval.coefficients import COEFFICIENTS
+from metaeval.coefficients import COEFFICIENTS, rowwise
 
-__all__ = ["GROUPINGS", "Correlation", "correlate"]
+__all__ = ["GROUPINGS", "Correlation", "correlate", "statistic"]
 
 GROUPINGS: dict[str, str] = {
     "system": "system level: scores averaged over items, one point per system",
@@ -137,9 +137,30 @@ def correlate(
         raise ValueError(f"unknown grouping {grouping!r}; choose from {list(GROUPINGS)}")
     if undefined not in ("skip", "zero"):
         raise ValueError(f"undefined must be 'skip' or 'zero', got {undefined!r}")
-    function = COEFFICIENTS[coefficient]
     m, h, paired = _matrices(metric, human)
+    value, n_points, n_groups, n_undefined = _evaluate(
+        m, h, paired, coefficient, grouping, undefined
+    )
+    return Correlation(
+        coefficient=coefficient,
+        grouping=grouping,
+        value=value,
+        n_points=n_points,
+        n_groups=n_groups,
+        n_undefined=n_undefined,
+        undefined=undefined,
+    )
 
+
+def _evaluate(
+    m: np.ndarray,
+    h: np.ndarray,
+    paired: np.ndarray,
+    coefficient: str,
+    grouping: str,
+    undefined: str,
+) -> tuple[float, int, int, int]:
+    """Value, points, groups and undefined groups for validated arrays."""
     if grouping in ("system", "pooled"):
         if grouping == "system":
             counts = paired.sum(axis=1)
@@ -148,41 +169,34 @@ def correlate(
             y = _merge_near_ties(np.where(paired, h, 0.0).sum(axis=1)[rated] / counts[rated])
         else:
             x, y = m[paired], h[paired]
-        value = function(x, y)
-        return Correlation(
-            coefficient=coefficient,
-            grouping=grouping,
-            value=value,
-            n_points=int(x.size),
-            n_groups=1,
-            n_undefined=int(math.isnan(value)),
-            undefined=undefined,
-        )
+        value = COEFFICIENTS[coefficient](x, y)
+        return value, int(x.size), 1, int(math.isnan(value))
 
     if grouping == "by_item":
         m, h, paired = m.T, h.T, paired.T
-    values: list[float] = []
-    n_points = n_groups = n_undefined = 0
-    for row in range(m.shape[0]):
-        keep = paired[row]
-        size = int(keep.sum())
-        if size < 2:
-            continue
-        n_groups += 1
-        n_points += size
-        value = function(m[row, keep], h[row, keep])
-        if not math.isnan(value):
-            values.append(value)
-        else:
-            n_undefined += 1
-            if undefined == "zero":
-                values.append(0.0)
-    return Correlation(
-        coefficient=coefficient,
-        grouping=grouping,
-        value=float(np.mean(values)) if values else math.nan,
-        n_points=n_points,
-        n_groups=n_groups,
-        n_undefined=n_undefined,
-        undefined=undefined,
+    sizes = paired.sum(axis=1)
+    groups = sizes >= 2
+    n_groups = int(groups.sum())
+    if n_groups == 0:
+        return math.nan, 0, 0, 0
+    values = rowwise(
+        coefficient, np.where(paired, m, np.nan)[groups], np.where(paired, h, np.nan)[groups]
     )
+    defined = ~np.isnan(values)
+    n_defined = int(defined.sum())
+    if undefined == "zero":
+        value = float(values[defined].sum() / n_groups)
+    else:
+        value = float(values[defined].mean()) if n_defined else math.nan
+    return value, int(sizes[groups].sum()), n_groups, n_groups - n_defined
+
+
+def statistic(
+    metric: np.ndarray, human: np.ndarray, coefficient: str, grouping: str, undefined: str = "skip"
+) -> float:
+    """The value of :func:`correlate` alone, for arrays that are already validated.
+
+    Used where the same statistic is computed many times, as in resampling.
+    """
+    paired = ~np.isnan(metric) & ~np.isnan(human)
+    return _evaluate(metric, human, paired, coefficient, grouping, undefined)[0]
