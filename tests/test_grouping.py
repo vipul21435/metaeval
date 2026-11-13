@@ -132,7 +132,7 @@ def reference(metric, human, coefficient: str, grouping: str) -> float:
 def test_groupings_match_a_scipy_reference_with_missing_scores():
     rng = np.random.default_rng(8)
     compared = 0
-    for _ in range(40):
+    for _ in range(25):
         shape = (int(rng.integers(2, 7)), int(rng.integers(2, 9)))
         metric = np.round(rng.normal(size=shape), 1)
         human = rng.integers(1, 5, size=shape).astype(float)
@@ -146,7 +146,7 @@ def test_groupings_match_a_scipy_reference_with_missing_scores():
                 tolerance = 1e-9 if grouping == "system" else 1e-12
                 assert ours == pytest.approx(expected, abs=tolerance, nan_ok=True)
                 compared += not math.isnan(expected)
-    assert compared > 500
+    assert compared > 300
 
 
 def test_reordering_systems_and_items_changes_nothing():

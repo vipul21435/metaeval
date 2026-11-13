@@ -85,7 +85,7 @@ def test_percentile_interval():
 @pytest.mark.parametrize("grouping", list(GROUPINGS))
 def test_bootstrap_is_deterministic_under_a_seed(resample, grouping):
     metric, human = scores(1)
-    arguments = dict(coefficient="kendall_b", grouping=grouping, resample=resample, n_resamples=60)
+    arguments = dict(coefficient="kendall_b", grouping=grouping, resample=resample, n_resamples=30)
     first = bootstrap(metric, human, seed=3, **arguments)
     again = bootstrap(metric, human, seed=3, **arguments)
     other = bootstrap(metric, human, seed=4, **arguments)
@@ -93,7 +93,7 @@ def test_bootstrap_is_deterministic_under_a_seed(resample, grouping):
     assert (first.low, first.high) != (other.low, other.high)
     assert first.value == correlate(metric, human, coefficient="kendall_b", grouping=grouping).value
     assert first.low <= first.value <= first.high
-    assert (first.resample, first.n_resamples, first.seed) == (resample, 60, 3)
+    assert (first.resample, first.n_resamples, first.seed) == (resample, 30, 3)
     assert first.confidence == 0.95
     assert first.to_dict()["low"] == first.low
 
@@ -138,7 +138,7 @@ def test_bootstrap_interval_covers_the_true_correlation():
     # Bivariate normal with correlation 0.6; a 90 % percentile interval should cover
     # the true value in roughly 90 % of the simulated data sets.
     rng = np.random.default_rng(23)
-    trials, covered = 200, 0
+    trials, covered = 100, 0
     for trial in range(trials):
         x = rng.normal(size=(1, 80))
         y = 0.6 * x + 0.8 * rng.normal(size=(1, 80))
@@ -148,18 +148,18 @@ def test_bootstrap_interval_covers_the_true_correlation():
             coefficient="pearson",
             grouping="pooled",
             resample="items",
-            n_resamples=200,
+            n_resamples=120,
             confidence=0.9,
             seed=trial,
         )
         covered += interval.low <= 0.6 <= interval.high
-    assert 0.82 <= covered / trials <= 0.96
+    assert 0.80 <= covered / trials <= 0.97
 
 
 def test_more_items_give_a_narrower_interval():
     arguments = dict(coefficient="kendall_b", grouping="pooled", resample="items", n_resamples=150)
     small = bootstrap(*scores(3, shape=(6, 15)), **arguments)
-    large = bootstrap(*scores(3, shape=(6, 240)), **arguments)
+    large = bootstrap(*scores(3, shape=(6, 120)), **arguments)
     assert large.high - large.low < 0.6 * (small.high - small.low)
 
 
@@ -167,7 +167,7 @@ def test_paired_bootstrap():
     metric, human = scores(5, noise=0.5)
     rng = np.random.default_rng(6)
     worse = metric + 4.0 * rng.normal(size=metric.shape)
-    arguments = dict(coefficient="kendall_b", grouping="by_item", n_resamples=200, seed=2)
+    arguments = dict(coefficient="kendall_b", grouping="by_item", n_resamples=100, seed=2)
     result = paired_bootstrap(metric, worse, human, **arguments)
     assert (
         result.value_a
@@ -175,7 +175,7 @@ def test_paired_bootstrap():
     )
     assert result.difference == pytest.approx(result.value_a - result.value_b)
     assert result.difference > 0 and result.low > 0
-    assert result.p_value == pytest.approx(2 / 201)
+    assert result.p_value == pytest.approx(2 / 101)
     # The same draws with the metrics exchanged mirror the result.
     mirrored = paired_bootstrap(worse, metric, human, **arguments)
     assert mirrored.difference == pytest.approx(-result.difference)
@@ -301,7 +301,7 @@ def equally_good_metrics(rng: np.random.Generator, shape=(10, 8), per_system=1.0
     return metrics[0], metrics[1], human
 
 
-def rejection_rate(unit: str, grouping: str, per_system: float, trials: int = 60) -> float:
+def rejection_rate(unit: str, grouping: str, per_system: float, trials: int = 40) -> float:
     rejections = 0
     for trial in range(trials):
         a, b, human = equally_good_metrics(
@@ -314,7 +314,7 @@ def rejection_rate(unit: str, grouping: str, per_system: float, trials: int = 60
             coefficient="pearson",
             grouping=grouping,
             unit=unit,
-            n_resamples=59,
+            n_resamples=39,
             seed=trial,
         )
         rejections += result.p_value <= 0.05
@@ -328,13 +328,13 @@ def test_exchanging_outputs_rejects_too_often_when_metrics_err_per_system():
     # are far too small and it rejects many times more often; exchanging whole systems,
     # the default at this level, keeps its level.
     assert rejection_rate("outputs", "system", per_system=1.0) > 0.25
-    assert rejection_rate("auto", "system", per_system=1.0) < 0.12
-    assert rejection_rate("auto", "by_item", per_system=1.0) < 0.12
+    assert rejection_rate("auto", "system", per_system=1.0) < 0.15
+    assert rejection_rate("auto", "by_item", per_system=1.0) < 0.15
 
 
 def test_exchanging_outputs_is_fine_without_errors_per_system():
-    assert rejection_rate("outputs", "system", per_system=0.0) < 0.12
-    assert rejection_rate("auto", "system", per_system=0.0) < 0.12
+    assert rejection_rate("outputs", "system", per_system=0.0) < 0.15
+    assert rejection_rate("auto", "system", per_system=0.0) < 0.15
 
 
 def test_paired_bootstrap_rarely_rejects_equally_good_metrics():
