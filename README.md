@@ -66,7 +66,7 @@ $ metaeval compare examples/toy_scores.jsonl --grouping by_item
 ...
 | metric a | metric b | grouping | coefficient | a | b | a - b | p bootstrap | p permutation | p Williams |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| metric_a | metric_b | by_item | kendall_b | 0.575 | 0.122 | 0.453 [-0.333, 1.333] | 0.307 | 0.097 | - |
+| metric_a | metric_b | by_item | kendall_b | 0.575 | 0.122 | 0.453 [-0.333, 1.333] | 0.307 | 0.225 | - |
 ```
 
 The five commands share their options:
@@ -82,8 +82,9 @@ The five commands share their options:
 `--metric`, `--coefficient` and `--grouping` (each repeatable) restrict the output; `--dimension` and
 `--annotators 'expert_*'` choose the human score; `--resamples N`, `--resample items|systems|both`,
 `--confidence` and `--seed` control the intervals (`--resamples 0` prints point estimates only);
-`--undefined zero` counts undefined groups as 0 instead of leaving them out; `--format json` prints the same
-results as JSON and `--output FILE` writes them to a file. `--coefficient pairwise_accuracy_calibrated` adds
+`--undefined zero` counts undefined groups as 0 instead of leaving them out; `--permute` chooses what the
+permutation test exchanges (see below); `--format json` prints the same results as JSON and `--output FILE`
+writes them to a file. `--coefficient pairwise_accuracy_calibrated` adds
 pairwise accuracy after tie calibration.
 
 From Python (`examples/quickstart.py`):
@@ -120,7 +121,8 @@ paired = paired_bootstrap(metric_a, metric_b, human, **settings)
 permutation = permutation_test(metric_a, metric_b, human, **settings)
 print("metric_a minus metric_b within items")
 print(f"  difference {paired.difference:.3f}  interval [{paired.low:.3f}, {paired.high:.3f}]")
-print(f"  p = {paired.p_value:.3f} (paired bootstrap), {permutation.p_value:.3f} (permutation)")
+print(f"  p = {paired.p_value:.3f} (paired bootstrap)")
+print(f"  p = {permutation.p_value:.3f} (permutation, whole {permutation.unit} exchanged)")
 
 ratings = np.stack([table.ratings["overall"][name] for name in table.annotators()])
 ceiling = human_ceiling(ratings, coefficient="kendall_b", grouping="by_item")
@@ -135,7 +137,8 @@ Kendall tau-b of metric_a with the human score, by grouping
   by_system  0.190  95% interval [-0.500, 0.741]
 metric_a minus metric_b within items
   difference 0.453  interval [-0.333, 1.333]
-  p = 0.350 (paired bootstrap), 0.090 (permutation)
+  p = 0.350 (paired bootstrap)
+  p = 0.214 (permutation, whole systems exchanged)
 human ceiling within items: 0.783
 ```
 
@@ -228,10 +231,9 @@ counted in the JSON output.
 - Paired bootstrap: both metrics on the same resamples; the interval is the percentile interval of the
   difference, and the two-sided p value is twice the smaller share of resampled differences on either side of
   zero (one added to the count and to the number of resamples).
-- Permutation test: both metrics are standardised and their scores exchanged with probability one half, output
-  by output (or by whole systems or items, following `--resample`); the p value is the share of permutations
-  with a difference at least as large in absolute value. These are Perm-Both, Perm-Systems and Perm-Inputs of
-  the same paper, which recommends Perm-Both.
+- Permutation test: both metrics are standardised and their scores exchanged with probability one half; the
+  p value is the share of permutations with a difference at least as large in absolute value. What is
+  exchanged, whole systems, whole items or single outputs, decides what the test assumes; see the next section.
 - Williams test, for Pearson correlations at `system` or `pooled` level:
   `t = (r_a - r_b) * sqrt((n - 1) * (1 + r_ab)) / sqrt(2 * K * (n - 1) / (n - 3) + (r_a + r_b)^2 / 4 * (1 - r_ab)^3)`
   with `K = 1 - r_a^2 - r_b^2 - r_ab^2 + 2 * r_a * r_b * r_ab`, on `n - 3` degrees of freedom, where `r_ab` is
@@ -243,8 +245,76 @@ counted in the JSON output.
   Musch, 2015: `t = -2.7743`, `df = 288`, `p = 0.0059`). Deutsch, Dror and Roth point out that it assumes normal
   scores and has low power on summarization data.
 
-The bootstrap asks whether the difference would hold for other systems and items; the permutation test asks
-whether these two metrics are exchangeable on this set of outputs. They can disagree, as the results below show.
+### What the permutation test exchanges
+
+Deutsch, Dror and Roth define the permutation test with whole systems exchanged (Perm-Systems), whole items
+(Perm-Inputs) or single outputs (Perm-Both) and recommend Perm-Both because it had the highest power in their
+experiments. Their paper measures power; it does not report how often the variants reject two metrics that
+are equally good.
+
+The null hypothesis of the test is that the two metrics' scores can be swapped, unit by unit, without changing
+how the pair behaves. For single outputs that holds when a metric's errors are independent from one output to
+the next. A metric usually also has an error of its own for a whole system (it likes or dislikes everything
+one system writes) or for a whole item. Swapping single outputs then mixes the two metrics inside every system,
+the permuted differences come out too small, and two equally good metrics are declared different. A small p
+value from that variant can mean no more than that the metrics make different kinds of error.
+
+`metaeval` therefore exchanges the unit the coefficient is computed across: whole systems for `system` and
+`by_item`, whole items for `by_system`, and for `pooled` both in turn, reporting the larger p value.
+`--permute systems`, `items` or `outputs` overrides this; `outputs` is Perm-Both.
+
+`examples/simulate_tests.py` measures how often each test rejects at the 5 % level on simulated tables of 16
+systems by 30 items (80 tables per cell, 99 permutations or resamples, seed 0). In the set-ups `output`,
+`system` and `item` the two metrics are equally good, so about 0.05 is the right answer; they have independent
+noise per output, and in `system` and `item` also an error of their own per system or per item. In the last
+two set-ups metric b really is worse and the rate is the power of the test. The Williams column is always
+the test on Pearson correlations. With Pearson (`python examples/simulate_tests.py --coefficient pearson`):
+
+| set-up | grouping | permute systems | permute items | permute outputs | default unit | paired bootstrap | Williams |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| output | system | 0.062 | 0.013 | 0.037 | 0.062 (systems) | 0.000 | 0.025 |
+| output | pooled | 0.037 | 0.025 | 0.000 | 0.000 (systems and items) | 0.000 | 0.000 |
+| output | by_item | 0.037 | 0.037 | 0.037 | 0.037 (systems) | 0.000 | - |
+| output | by_system | 0.037 | 0.000 | 0.013 | 0.000 (items) | 0.000 | - |
+| system | system | 0.050 | 0.713 | 0.662 | 0.050 (systems) | 0.013 | 0.013 |
+| system | pooled | 0.037 | 0.425 | 0.375 | 0.037 (systems and items) | 0.025 | 0.400 |
+| system | by_item | 0.050 | 0.475 | 0.450 | 0.050 (systems) | 0.013 | - |
+| system | by_system | 0.037 | 0.013 | 0.000 | 0.013 (items) | 0.000 | - |
+| item | system | 0.037 | 0.037 | 0.013 | 0.037 (systems) | 0.000 | 0.025 |
+| item | pooled | 0.287 | 0.037 | 0.275 | 0.037 (systems and items) | 0.013 | 0.287 |
+| item | by_item | 0.013 | 0.037 | 0.000 | 0.013 (systems) | 0.000 | - |
+| item | by_system | 0.300 | 0.037 | 0.250 | 0.037 (items) | 0.013 | - |
+| b is worse | system | 1.000 | 1.000 | 1.000 | 1.000 (systems) | 1.000 | 1.000 |
+| b is worse | pooled | 1.000 | 1.000 | 1.000 | 1.000 (systems and items) | 1.000 | 1.000 |
+| b is worse | by_item | 1.000 | 1.000 | 1.000 | 1.000 (systems) | 1.000 | - |
+| b is worse | by_system | 1.000 | 1.000 | 1.000 | 1.000 (items) | 1.000 | - |
+| b errs per system | system | 0.825 | 1.000 | 1.000 | 0.825 (systems) | 0.700 | 0.988 |
+| b errs per system | pooled | 0.350 | 0.575 | 0.613 | 0.338 (systems and items) | 0.100 | 0.613 |
+| b errs per system | by_item | 0.163 | 0.512 | 0.475 | 0.163 (systems) | 0.087 | - |
+| b errs per system | by_system | 0.062 | 0.013 | 0.050 | 0.013 (items) | 0.000 | - |
+
+With Kendall's tau-b at system level
+(`python examples/simulate_tests.py --coefficient kendall_b --grouping system`):
+
+| set-up | grouping | permute systems | permute items | permute outputs | default unit | paired bootstrap | Williams |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| output | system | 0.025 | 0.025 | 0.037 | 0.025 (systems) | 0.000 | 0.025 |
+| system | system | 0.037 | 0.537 | 0.463 | 0.037 (systems) | 0.000 | 0.013 |
+| item | system | 0.000 | 0.000 | 0.000 | 0.000 (systems) | 0.000 | 0.025 |
+| b is worse | system | 0.975 | 1.000 | 1.000 | 0.975 (systems) | 0.738 | 1.000 |
+| b errs per system | system | 0.550 | 0.900 | 0.925 | 0.550 (systems) | 0.050 | 0.988 |
+
+With 80 tables a rate near 0.05 has a standard error of about 0.02.
+
+- With independent noise per output every variant stays near or below 5 %.
+- With an error per system, exchanging single outputs rejects 66.2 % of equally good pairs at system level
+  (46.3 % with tau-b), 45.0 % within items and 37.5 % pooled; with an error per item it rejects 27.5 % pooled
+  and 25.0 % within systems. Exchanging the wrong whole unit fails in the same way.
+- The default unit stays between 0.0 % and 6.2 % in all twelve cells where the metrics are equally good. It
+  finds the worse metric in every table of `b is worse` with Pearson (97.5 % with tau-b at system level), and
+  in `b errs per system` in 82.5 % of tables at system level with Pearson and 55.0 % with tau-b.
+- The Williams test keeps its level at system level, where it also has the most power, and rejects 40.0 % and
+  28.7 % of equally good pairs at the pooled level, where outputs of one system or item are not independent.
 
 ### Ordinal agreement and scale use
 
@@ -355,34 +425,43 @@ metaeval compare summeval_scores.jsonl --dimension relevance --annotators 'exper
 
 | metric a | metric b | grouping | coefficient | a | b | a - b | p bootstrap | p permutation | p Williams |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| unigram_f1 | bigram_f1 | system | kendall_b | 0.617 | 0.517 | 0.100 [-0.202, 0.444] | 0.585 | 0.466 | - |
-| unigram_f1 | bigram_f1 | by_item | kendall_b | 0.205 | 0.153 | 0.052 [-0.002, 0.113] | 0.058 | 0.008 | - |
-| unigram_f1 | lcs_f1 | system | kendall_b | 0.617 | 0.467 | 0.150 [-0.230, 0.562] | 0.571 | 0.121 | - |
-| unigram_f1 | lcs_f1 | by_item | kendall_b | 0.205 | 0.166 | 0.040 [-0.022, 0.107] | 0.228 | 0.065 | - |
-| unigram_f1 | length | system | kendall_b | 0.617 | 0.233 | 0.383 [-0.474, 1.018] | 0.386 | 0.002 | - |
-| unigram_f1 | length | by_item | kendall_b | 0.205 | 0.106 | 0.099 [-0.102, 0.284] | 0.300 | 0.004 | - |
-| bigram_f1 | lcs_f1 | system | kendall_b | 0.517 | 0.467 | 0.050 [-0.296, 0.400] | 0.973 | 0.620 | - |
-| bigram_f1 | lcs_f1 | by_item | kendall_b | 0.153 | 0.166 | -0.012 [-0.072, 0.048] | 0.645 | 0.488 | - |
-| bigram_f1 | length | system | kendall_b | 0.517 | 0.233 | 0.283 [-0.673, 0.947] | 0.525 | 0.029 | - |
-| bigram_f1 | length | by_item | kendall_b | 0.153 | 0.106 | 0.047 [-0.162, 0.240] | 0.651 | 0.156 | - |
-| lcs_f1 | length | system | kendall_b | 0.467 | 0.233 | 0.233 [-0.667, 0.930] | 0.595 | 0.060 | - |
-| lcs_f1 | length | by_item | kendall_b | 0.166 | 0.106 | 0.060 [-0.146, 0.252] | 0.563 | 0.076 | - |
+| unigram_f1 | bigram_f1 | system | kendall_b | 0.617 | 0.517 | 0.100 [-0.202, 0.444] | 0.585 | 0.587 | - |
+| unigram_f1 | bigram_f1 | by_item | kendall_b | 0.205 | 0.153 | 0.052 [-0.002, 0.113] | 0.058 | 0.013 | - |
+| unigram_f1 | lcs_f1 | system | kendall_b | 0.617 | 0.467 | 0.150 [-0.230, 0.562] | 0.571 | 0.302 | - |
+| unigram_f1 | lcs_f1 | by_item | kendall_b | 0.205 | 0.166 | 0.040 [-0.022, 0.107] | 0.228 | 0.029 | - |
+| unigram_f1 | length | system | kendall_b | 0.617 | 0.233 | 0.383 [-0.474, 1.018] | 0.386 | 0.312 | - |
+| unigram_f1 | length | by_item | kendall_b | 0.205 | 0.106 | 0.099 [-0.102, 0.284] | 0.300 | 0.221 | - |
+| bigram_f1 | lcs_f1 | system | kendall_b | 0.517 | 0.467 | 0.050 [-0.296, 0.400] | 0.973 | 0.589 | - |
+| bigram_f1 | lcs_f1 | by_item | kendall_b | 0.153 | 0.166 | -0.012 [-0.072, 0.048] | 0.645 | 0.318 | - |
+| bigram_f1 | length | system | kendall_b | 0.517 | 0.233 | 0.283 [-0.673, 0.947] | 0.525 | 0.455 | - |
+| bigram_f1 | length | by_item | kendall_b | 0.153 | 0.106 | 0.047 [-0.162, 0.240] | 0.651 | 0.576 | - |
+| lcs_f1 | length | system | kendall_b | 0.467 | 0.233 | 0.233 [-0.667, 0.930] | 0.595 | 0.540 | - |
+| lcs_f1 | length | by_item | kendall_b | 0.166 | 0.106 | 0.060 [-0.146, 0.252] | 0.563 | 0.445 | - |
 
-By the paired bootstrap over systems and items, none of the six differences is significant at 0.05 at either
-level; every interval for a difference includes zero. The permutation test, which keeps these systems and
-items and exchanges the two metrics' scores, finds `unigram_f1` above `length` at both levels (p = 0.002 and
-0.004), above `bigram_f1` within items (0.008), and `bigram_f1` above `length` at system level (0.029). So on
-this data the claim "unigram overlap tracks relevance better than length" holds for these 16 systems and 100
-articles, and the bootstrap does not support extending it to other systems and articles.
+The permutation test exchanges whole systems at both levels. At system level no test separates any two of
+the four metrics: the permutation p values run from 0.302 to 0.589 and every bootstrap interval for a
+difference includes zero. With 16 systems the data cannot tell unigram overlap from summary length (0.617
+against 0.233, p = 0.312). Within items the permutation test separates `unigram_f1` from `bigram_f1`
+(p = 0.013) and from `lcs_f1` (p = 0.029), and nothing else; `unigram_f1` against `length`, the largest
+difference there (0.099), has p = 0.221. Twelve tests were run without a correction for multiple comparisons;
+a Bonferroni threshold would be 0.05 / 12 = 0.004, so the two p values below 0.05 are suggestive at most.
 
-The Williams test on the system-level Pearson correlations (`--metric unigram_f1 --metric bigram_f1 --metric
-length --coefficient pearson --grouping system`) rejects nothing with 16 systems:
+Version 0.1.0 exchanged single outputs and printed p = 0.002 and 0.004 for `unigram_f1` against `length`.
+As the simulation above shows, that variant rejects equally good metrics far too often when the two metrics
+err differently from system to system, as an overlap score and a length count can be expected to; those p
+values should not be used.
+
+The same comparison on the system-level Pearson correlations, where the Williams test applies (`--metric
+unigram_f1 --metric bigram_f1 --metric length --coefficient pearson --grouping system`):
 
 | metric a | metric b | grouping | coefficient | a | b | a - b | p bootstrap | p permutation | p Williams |
 | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| unigram_f1 | bigram_f1 | system | pearson | 0.670 | 0.651 | 0.019 [-0.082, 0.272] | 0.635 | 0.643 | 0.672 |
-| unigram_f1 | length | system | pearson | 0.670 | 0.239 | 0.431 [-0.296, 1.141] | 0.216 | <0.001 | 0.156 |
-| bigram_f1 | length | system | pearson | 0.651 | 0.239 | 0.412 [-0.488, 1.141] | 0.288 | <0.001 | 0.207 |
+| unigram_f1 | bigram_f1 | system | pearson | 0.670 | 0.651 | 0.019 [-0.082, 0.272] | 0.635 | 0.806 | 0.672 |
+| unigram_f1 | length | system | pearson | 0.670 | 0.239 | 0.431 [-0.296, 1.141] | 0.216 | 0.231 | 0.156 |
+| bigram_f1 | length | system | pearson | 0.651 | 0.239 | 0.412 [-0.488, 1.141] | 0.288 | 0.269 | 0.207 |
+
+None of the three tests rejects with 16 systems: for `unigram_f1` against `length` the permutation p is 0.231,
+the Williams p 0.156 and the bootstrap p 0.216.
 
 ### Human ceiling
 
@@ -481,8 +560,12 @@ reflects how many pairs the experts tie, not skill at ordering summaries; tau-b 
   system, which adds ties, and a resample can leave the statistic undefined (counted, then left out).
 - The paired bootstrap p value is read off the resampled differences without studentising, and no correction
   for multiple comparisons is applied when several pairs of metrics are tested.
-- The Williams test is offered at system and pooled level only, assumes normal scores, and at pooled level
-  ignores that outputs of one system or item are dependent.
+- The Williams test is offered at system and pooled level only and assumes normal scores. At pooled level it
+  ignores that outputs of one system or item are dependent: in the simulation above it rejected 40.0 % and
+  28.7 % of equally good pairs there. Read it at system level.
+- The permutation test exchanges whole systems or items, so with n of them there are 2^n patterns and p cannot
+  fall below 2^(1-n): with fewer than 6 systems a two-sided p below 0.05 is impossible. Its level was checked
+  by simulation for an error per system or per item, one at a time, not for both at once.
 - Tie calibration fits its threshold on the data it reports on and compares all pairs of a group, so the pooled
   level needs memory quadratic in the number of outputs (it refuses above 30 million pairs); intervals for the
   calibrated pooled accuracy are slow.

@@ -9,6 +9,8 @@ import pytest
 
 from metaeval.grouping import GROUPINGS, correlate
 from metaeval.resampling import (
+    PERMUTE,
+    PERMUTE_BY_GROUPING,
     RESAMPLE,
     bootstrap,
     paired_bootstrap,
@@ -199,42 +201,140 @@ def test_permutation_test_detects_a_better_metric():
     metric, human = scores(7, noise=0.4)
     rng = np.random.default_rng(8)
     worse = 50.0 + 20.0 * (metric + 3.0 * rng.normal(size=metric.shape))
-    arguments = dict(coefficient="pearson", grouping="pooled", n_resamples=300, seed=1)
+    arguments = dict(coefficient="pearson", grouping="pooled", n_resamples=200, seed=1)
     result = permutation_test(metric, worse, human, **arguments)
     assert result.difference > 0
-    assert result.p_value == pytest.approx(1 / 301)
+    # Eight systems allow 2^8 patterns of whole systems, two of which reproduce the
+    # observed difference, so p stays a little above the smallest possible 1/201.
+    assert 1 / 201 <= result.p_value < 0.05
+    assert result.unit == "systems, items"
     assert result == permutation_test(metric, worse, human, **arguments)
-    one_sided = permutation_test(metric, worse, human, alternative="greater", **arguments)
-    assert one_sided.p_value == pytest.approx(1 / 301)
+    # Twenty-five items allow so many patterns that no permutation reaches the difference.
+    by_items = permutation_test(metric, worse, human, unit="items", **arguments)
+    assert by_items.p_value == pytest.approx(1 / 201)
+    one_sided = permutation_test(
+        metric, worse, human, unit="items", alternative="greater", **arguments
+    )
+    assert one_sided.p_value == pytest.approx(1 / 201)
     reverse = permutation_test(worse, metric, human, alternative="greater", **arguments)
     assert reverse.p_value > 0.99
     same = permutation_test(metric, metric, human, **arguments)
     assert (same.difference, same.p_value) == (0.0, 1.0)
-    assert result.to_dict()["resample"] == "both"
+    assert result.to_dict()["unit"] == "systems, items"
 
 
-@pytest.mark.parametrize("resample", list(RESAMPLE))
-def test_permutation_test_keeps_its_level_under_the_null(resample):
-    # Two metrics that are equally noisy readings of the same quality.
-    rejections, trials = 0, 120
+def test_permutation_unit_follows_the_grouping():
+    metric, human = scores(9, shape=(6, 10), noise=0.5)
+    rng = np.random.default_rng(10)
+    other = metric + rng.normal(size=metric.shape)
+    arguments = dict(coefficient="pearson", n_resamples=60, seed=3)
+    assert PERMUTE_BY_GROUPING == {
+        "system": ("systems",),
+        "by_item": ("systems",),
+        "by_system": ("items",),
+        "pooled": ("systems", "items"),
+    }
+    for grouping, units in PERMUTE_BY_GROUPING.items():
+        automatic = permutation_test(metric, other, human, grouping=grouping, **arguments)
+        single = [
+            permutation_test(metric, other, human, grouping=grouping, unit=unit, **arguments)
+            for unit in units
+        ]
+        assert automatic.unit == ", ".join(units)
+        # With several units the larger p value is reported.
+        assert automatic.p_value == max(result.p_value for result in single)
+        assert automatic.n_resamples == 60
+    by_outputs = permutation_test(
+        metric, other, human, grouping="system", unit="outputs", **arguments
+    )
+    assert by_outputs.unit == "outputs"
+    assert set(PERMUTE) == {"systems", "items", "outputs"}
+
+
+def test_permutation_draws_whole_systems_items_or_outputs(monkeypatch):
+    # Record what reaches the statistic: with whole systems exchanged every row of the
+    # first array is either metric a's row or metric b's row, and so on.
+    from metaeval import resampling
+
+    a = np.arange(12.0).reshape(3, 4)
+    b = a + 100.0
+    human = np.arange(12.0).reshape(3, 4) % 5
+    seen = []
+
+    def spy(x, h, coefficient, grouping, undefined):
+        seen.append(x.copy())
+        return 0.0
+
+    monkeypatch.setattr(resampling, "statistic", spy)
+    monkeypatch.setattr(resampling, "_standardize", lambda scores: scores)
+    for unit in ("systems", "items", "outputs"):
+        seen.clear()
+        permutation_test(
+            a, b, human, coefficient="pearson", grouping="pooled", unit=unit, n_resamples=20
+        )
+        from_b = [sample >= 100.0 for sample in seen[2:]]
+        assert any(mask.any() and not mask.all() for mask in from_b)
+        for mask in from_b:
+            if unit == "systems":
+                assert (mask.all(axis=1) | ~mask.any(axis=1)).all()
+            elif unit == "items":
+                assert (mask.all(axis=0) | ~mask.any(axis=0)).all()
+        if unit == "outputs":
+            assert any(
+                not (mask.all(axis=1) | ~mask.any(axis=1)).all()
+                and not (mask.all(axis=0) | ~mask.any(axis=0)).all()
+                for mask in from_b
+            )
+        # The two arrays of a permutation are complementary.
+        for first, second in zip(seen[2::2], seen[3::2], strict=True):
+            np.testing.assert_array_equal(first + second, a + b)
+
+
+def equally_good_metrics(rng: np.random.Generator, shape=(10, 8), per_system=1.0):
+    """Two metrics with the same noise; each has its own error for every system."""
+    quality = rng.normal(size=(shape[0], 1)) + rng.normal(size=shape)
+    human = quality + 0.5 * rng.normal(size=shape)
+    metrics = [
+        quality + rng.normal(size=shape) + per_system * rng.normal(size=(shape[0], 1))
+        for _ in range(2)
+    ]
+    return metrics[0], metrics[1], human
+
+
+def rejection_rate(unit: str, grouping: str, per_system: float, trials: int = 60) -> float:
+    rejections = 0
     for trial in range(trials):
-        rng = np.random.default_rng(1000 + trial)
-        quality = rng.normal(size=(6, 12))
-        human = quality + 0.5 * rng.normal(size=(6, 12))
-        a = quality + rng.normal(size=(6, 12))
-        b = 3.0 * (quality + rng.normal(size=(6, 12))) + 10.0
+        a, b, human = equally_good_metrics(
+            np.random.default_rng(500 + trial), per_system=per_system
+        )
         result = permutation_test(
             a,
             b,
             human,
             coefficient="pearson",
-            grouping="pooled",
-            resample=resample,
-            n_resamples=99,
+            grouping=grouping,
+            unit=unit,
+            n_resamples=59,
             seed=trial,
         )
         rejections += result.p_value <= 0.05
-    assert rejections / trials < 0.13
+    return rejections / trials
+
+
+def test_exchanging_outputs_rejects_too_often_when_metrics_err_per_system():
+    # Two equally good metrics, each with its own error per system. At system level a
+    # test at the 5 % level should reject about one time in twenty. Exchanging single
+    # outputs averages the two metrics within every system, so the permuted differences
+    # are far too small and it rejects many times more often; exchanging whole systems,
+    # the default at this level, keeps its level.
+    assert rejection_rate("outputs", "system", per_system=1.0) > 0.25
+    assert rejection_rate("auto", "system", per_system=1.0) < 0.12
+    assert rejection_rate("auto", "by_item", per_system=1.0) < 0.12
+
+
+def test_exchanging_outputs_is_fine_without_errors_per_system():
+    assert rejection_rate("outputs", "system", per_system=0.0) < 0.12
+    assert rejection_rate("auto", "system", per_system=0.0) < 0.12
 
 
 def test_permutation_test_undefined():
@@ -248,7 +348,7 @@ def test_permutation_test_undefined():
         n_resamples=5,
     )
     assert math.isnan(result.difference) and math.isnan(result.p_value)
-    assert result.n_undefined == 5
+    assert result.n_undefined == 10  # five permutations for each of the two units
 
 
 def test_invalid_arguments():
@@ -266,6 +366,10 @@ def test_invalid_arguments():
     with pytest.raises(ValueError, match="alternative"):
         permutation_test(
             metric, metric, human, coefficient="pearson", grouping="system", alternative="less"
+        )
+    with pytest.raises(ValueError, match="unknown unit"):
+        permutation_test(
+            metric, metric, human, coefficient="pearson", grouping="system", unit="both"
         )
     with pytest.raises(ValueError, match="differ in shape"):
         paired_bootstrap(metric, metric[:, :3], human, coefficient="pearson", grouping="system")

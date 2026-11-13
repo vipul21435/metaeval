@@ -19,6 +19,8 @@ from metaeval.ceiling import human_ceiling, metric_against_rest
 from metaeval.coefficients import COEFFICIENTS
 from metaeval.grouping import GROUPINGS, STATISTICS, correlate
 from metaeval.resampling import (
+    PERMUTE,
+    PERMUTE_BY_GROUPING,
     RESAMPLE,
     bootstrap,
     paired_bootstrap,
@@ -132,6 +134,16 @@ def build_parser() -> argparse.ArgumentParser:
                 type=int,
                 metavar="N",
                 help="permutations for the permutation test; 0 skips it (default: as --resamples)",
+            )
+            sub.add_argument(
+                "--permute",
+                choices=("auto", *PERMUTE),
+                default="auto",
+                help="what the permutation test exchanges between two metrics: whole systems, "
+                "whole items or single outputs. auto (the default) follows the grouping: systems "
+                "for system and by_item, items for by_system, and for pooled both in turn with "
+                "the larger p value. Exchanging single outputs rejects too often when a metric "
+                "has an error of its own per system or item",
             )
         if name in ("scale", "report"):
             sub.add_argument(
@@ -388,7 +400,7 @@ def _section_compare(ctx: _Context) -> tuple[list[str], list[dict[str, object]]]
                         b,
                         ctx.human,
                         **common,
-                        resample=args.resample,
+                        unit=args.permute,
                         n_resamples=permutations,
                         seed=args.seed,
                     )
@@ -408,11 +420,25 @@ def _section_compare(ctx: _Context) -> tuple[list[str], list[dict[str, object]]]
     lines += [
         "",
         "p values are two-sided. p bootstrap: paired bootstrap of a - b on the same resamples. "
-        f"p permutation: scores of a and b exchanged ({RESAMPLE[args.resample]}), "
+        f"p permutation: scores of a and b exchanged ({_permuted(groupings, args.permute)}), "
         f"{permutations} permutations. p Williams: Williams test for dependent Pearson "
         "correlations, at system or pooled level only.",
     ]
     return lines, entries
+
+
+def _permuted(groupings: Sequence[str], unit: str) -> str:
+    """What the permutation test exchanged, in words, for the groupings shown."""
+    if unit != "auto":
+        return PERMUTE[unit]
+    parts = []
+    for grouping in groupings:
+        units = PERMUTE_BY_GROUPING[grouping]
+        what = " and ".join(f"whole {name}" for name in units)
+        if len(units) > 1:
+            what += " in turn, larger p kept"
+        parts.append(f"{grouping}: {what}")
+    return "; ".join(parts)
 
 
 # scale ----------------------------------------------------------------------------------

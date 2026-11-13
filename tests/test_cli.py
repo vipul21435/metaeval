@@ -430,6 +430,8 @@ def test_compare(capsys, panel):
         "kendall_b",
         "--resamples",
         "80",
+        "--permute",
+        "outputs",
     )
     assert status == 0
     assert out.startswith("# Differences between metrics\n")
@@ -445,6 +447,24 @@ def test_compare(capsys, panel):
     assert pearson_row[9] == "<0.001"
     assert kendall_row[9] == "-"
     assert "p Williams: Williams test for dependent Pearson correlations" in out
+    assert "p permutation: scores of a and b exchanged (single outputs exchanged), 80" in out
+
+    # By default the unit follows the grouping. The fixture has five systems, so with
+    # whole systems exchanged only 2^5 patterns exist and p cannot fall below 2/32.
+    status, out, _ = run(capsys, *arguments, "--coefficient", "pearson", "--resamples", "80")
+    assert float(table_rows(out)[2][8]) > 0.03
+    assert (
+        "p permutation: scores of a and b exchanged (pooled: whole systems and whole items "
+        "in turn, larger p kept), 80 permutations." in out
+    )
+    by_system = run(
+        capsys, *arguments[:-1], "by_system", "--resamples", "0", "--permutations", "20"
+    )[1]
+    assert "exchanged (by_system: whole items), 20 permutations." in by_system
+    status, out, _ = run(
+        capsys, *arguments[:-1], "system", "--permutations", "20", "--format", "json"
+    )
+    assert json.loads(out)["comparisons"][0]["permutation"]["unit"] == "systems"
 
     status, out, _ = run(
         capsys,

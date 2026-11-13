@@ -4,7 +4,9 @@ The score arrays have shape ``(n_systems, n_items)``. A bootstrap resample draws
 replacement, the systems, the items, or both, and the statistic is recomputed on the
 resampled arrays; a system or item drawn twice appears twice. These are the Boot-Systems,
 Boot-Inputs and Boot-Both procedures of Deutsch, Dror and Roth (2021), with percentile
-intervals, and the permutation test is their Perm-Systems, Perm-Inputs and Perm-Both.
+intervals. The permutation test exchanges the scores of two metrics for whole systems,
+whole items or single outputs (their Perm-Systems, Perm-Inputs and Perm-Both); which of
+these is exchanged decides what the test assumes, see :func:`permutation_test`.
 """
 
 from __future__ import annotations
@@ -19,6 +21,8 @@ from numpy.typing import ArrayLike
 from metaeval.grouping import GROUPINGS, STATISTICS, _matrices, statistic
 
 __all__ = [
+    "PERMUTE",
+    "PERMUTE_BY_GROUPING",
     "RESAMPLE",
     "Interval",
     "PairedBootstrap",
@@ -36,6 +40,26 @@ RESAMPLE: dict[str, str] = {
     "both": "systems and items resampled",
 }
 """What a resample draws, by name."""
+
+PERMUTE: dict[str, str] = {
+    "systems": "whole systems exchanged",
+    "items": "whole items exchanged",
+    "outputs": "single outputs exchanged",
+}
+"""What the permutation test exchanges between two metrics, by name."""
+
+PERMUTE_BY_GROUPING: dict[str, tuple[str, ...]] = {
+    "system": ("systems",),
+    "by_item": ("systems",),
+    "by_system": ("items",),
+    "pooled": ("systems", "items"),
+}
+"""The units exchanged for each grouping when the unit is left to ``"auto"``.
+
+The unit is the one the coefficient is computed across: systems at system level and
+within items, items within systems. At the pooled level both are tried and the larger p
+value is kept.
+"""
 
 
 def _check(coefficient: str, grouping: str, resample: str, n_resamples: int) -> None:
@@ -245,9 +269,11 @@ def paired_bootstrap(
 class PermutationTest:
     """Permutation test of ``value_a - value_b`` against no difference.
 
-    ``p_value`` is the share of permutations whose difference is at least as extreme as
-    the observed one (in absolute value when two-sided), with one added to the count
-    and to the number of permutations.
+    ``unit`` names what was exchanged (``"systems"``, ``"items"``, ``"outputs"``, or
+    ``"systems, items"`` when both were tried and the larger p value kept). ``p_value``
+    is the share of permutations whose difference is at least as extreme as the observed
+    one (in absolute value when two-sided), with one added to the count and to the number
+    of permutations. ``n_resamples`` is the number of permutations per unit.
     """
 
     coefficient: str
@@ -255,7 +281,7 @@ class PermutationTest:
     difference: float
     p_value: float
     alternative: str
-    resample: str
+    unit: str
     n_resamples: int
     n_undefined: int
     seed: int
@@ -280,7 +306,7 @@ def permutation_test(
     *,
     coefficient: str,
     grouping: str,
-    resample: str = "both",
+    unit: str = "auto",
     n_resamples: int = 1000,
     alternative: str = "two-sided",
     seed: int = 0,
@@ -289,11 +315,24 @@ def permutation_test(
     """Permutation test for the difference between two metrics against the same humans.
 
     Both metrics are standardised, then their scores are exchanged with probability one
-    half: for whole systems (``resample="systems"``), for whole items (``"items"``) or
-    output by output (``"both"``). ``alternative`` is ``"two-sided"`` or ``"greater"``
-    (metric a correlates more than metric b).
+    half, for whole systems (``unit="systems"``), whole items (``"items"``) or single
+    outputs (``"outputs"``). The unit decides the null hypothesis: the test is valid
+    when the two metrics' scores can be swapped unit by unit without changing their
+    joint behaviour. A metric usually has errors of its own that are shared by all
+    outputs of a system (it favours some systems) or of an item. Exchanging single
+    outputs splits such errors between the two metrics, the permuted differences become
+    too small, and two equally good metrics are declared different far too often;
+    exchanging whole systems or items keeps them together.
+
+    With ``unit="auto"`` (the default) the unit follows the grouping, see
+    :data:`PERMUTE_BY_GROUPING`: whole systems at ``system`` level and for ``by_item``,
+    whole items for ``by_system``, and for ``pooled`` both in turn with the larger p
+    value reported. ``alternative`` is ``"two-sided"`` or ``"greater"`` (metric a
+    correlates more than metric b).
     """
-    _check(coefficient, grouping, resample, n_resamples)
+    _check(coefficient, grouping, "both", n_resamples)
+    if unit != "auto" and unit not in PERMUTE:
+        raise ValueError(f"unknown unit {unit!r}; choose from {['auto', *PERMUTE]}")
     if alternative not in ("two-sided", "greater"):
         raise ValueError("alternative must be 'two-sided' or 'greater'")
     a, h, _ = _matrices(metric_a, human)
@@ -306,16 +345,21 @@ def permutation_test(
         )
 
     observed = difference(a, b)
-    shape = {"both": a.shape, "systems": (a.shape[0], 1), "items": (1, a.shape[1])}[resample]
-    rng = np.random.default_rng(seed)
-    values = np.empty(n_resamples)
-    for index in range(n_resamples):
-        swap = np.broadcast_to(rng.random(shape) < 0.5, a.shape)
-        values[index] = difference(np.where(swap, b, a), np.where(swap, a, b))
-    defined = values[~np.isnan(values)]
-    if math.isnan(observed) or defined.size == 0:
-        p_value = math.nan
-    else:
+    units = PERMUTE_BY_GROUPING[grouping] if unit == "auto" else (unit,)
+    shapes = {"outputs": a.shape, "systems": (a.shape[0], 1), "items": (1, a.shape[1])}
+    p_values = []
+    n_undefined = 0
+    for name in units:
+        rng = np.random.default_rng(seed)
+        values = np.empty(n_resamples)
+        for index in range(n_resamples):
+            swap = np.broadcast_to(rng.random(shapes[name]) < 0.5, a.shape)
+            values[index] = difference(np.where(swap, b, a), np.where(swap, a, b))
+        defined = values[~np.isnan(values)]
+        n_undefined += int(values.size - defined.size)
+        if math.isnan(observed) or defined.size == 0:
+            p_values.append(math.nan)
+            continue
         # A small tolerance keeps permutations that reproduce the observed value, up to
         # rounding, on the "at least as extreme" side.
         slack = 1e-12
@@ -323,15 +367,15 @@ def permutation_test(
             extreme = np.count_nonzero(np.abs(defined) >= abs(observed) - slack)
         else:
             extreme = np.count_nonzero(defined >= observed - slack)
-        p_value = (extreme + 1) / (defined.size + 1)
+        p_values.append((extreme + 1) / (defined.size + 1))
     return PermutationTest(
         coefficient=coefficient,
         grouping=grouping,
         difference=observed,
-        p_value=p_value,
+        p_value=math.nan if any(math.isnan(p) for p in p_values) else max(p_values),
         alternative=alternative,
-        resample=resample,
+        unit=", ".join(units),
         n_resamples=n_resamples,
-        n_undefined=int(values.size - defined.size),
+        n_undefined=n_undefined,
         seed=seed,
     )

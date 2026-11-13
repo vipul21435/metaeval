@@ -26,6 +26,8 @@ from metaeval.coefficients import (
 )
 from metaeval.grouping import GROUPINGS, STATISTICS, Correlation, correlate
 from metaeval.resampling import (
+    PERMUTE,
+    PERMUTE_BY_GROUPING,
     RESAMPLE,
     Interval,
     PairedBootstrap,
@@ -44,6 +46,8 @@ __all__ = [
     "CALIBRATED",
     "COEFFICIENTS",
     "GROUPINGS",
+    "PERMUTE",
+    "PERMUTE_BY_GROUPING",
     "RESAMPLE",
     "STATISTICS",
     "Ceiling",
