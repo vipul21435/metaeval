@@ -597,6 +597,9 @@ reflects how many pairs the experts tie, not skill at ordering summaries; tau-b 
 - [rubricops](https://github.com/vipul21435/rubricops) computes inter-rater agreement coefficients (Cohen's and
   Fleiss' kappa, Krippendorff's alpha) alongside rubric scoring; use it for agreement among annotators beyond
   the leave-one-out ceiling here.
+- [ppieval](https://github.com/vipul21435/ppieval): combines a few human labels with many automatic judgments and keeps the interval valid.
+- [labelfuse](https://github.com/vipul21435/labelfuse): aggregates noisy labels from several annotators into one label with a probability, and audits the annotators.
+- [rankstable](https://github.com/vipul21435/rankstable): how stable a leaderboard's order is to the averaging rule and the choice of benchmarks.
 
 ## Licence
 
