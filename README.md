@@ -474,7 +474,7 @@ reflects how many pairs the experts tie, not skill at ordering summaries; tau-b 
 
 ## Limitations
 
-- No chart output. The spec for this tool includes an optional chart; it is not implemented.
+- No chart output: results are tables and JSON only.
 - The real-data results use overlap scores recomputed by a plain script, not the SummEval paper's metric scores,
   and only one seed (0); the intervals carry Monte Carlo error from 1,000 resamples.
 - Percentile intervals only; no BCa or studentised intervals. With few systems, many system resamples repeat a
