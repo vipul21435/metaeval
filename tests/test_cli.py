@@ -45,7 +45,11 @@ def grid(tmp_path) -> Path:
 
 
 def run(capsys, *arguments: str) -> tuple[int, str, str]:
-    status = main([str(argument) for argument in arguments])
+    """Run the command; without ``--resamples`` it prints point estimates only."""
+    arguments = [str(argument) for argument in arguments]
+    if "--resamples" not in arguments:
+        arguments += ["--resamples", "0"]
+    status = main(arguments)
     captured = capsys.readouterr()
     return status, captured.out, captured.err
 
@@ -62,6 +66,7 @@ def test_markdown_has_every_grouping_labelled(capsys, grid):
     assert out.startswith("# Correlation with human ratings\n")
     assert f"- scores: {grid} (3 systems, 4 items)" in out
     assert "- human score: mean of 1 annotator (ann_1), dimension 'overall'" in out
+    assert "- intervals: none, point estimates only" in out
     for name, label in GROUPINGS.items():
         assert f"- {name}: {label}" in out
     rows = table_rows(out)
@@ -101,8 +106,7 @@ def test_json_matches_the_library(capsys, grid):
         "annotators": ["ann_1"],
         "aggregate": "mean",
     }
-    assert document["undefined"] == "skip"
-    assert document["groupings"] == GROUPINGS
+    assert document["resampling"] is None
     assert len(document["results"]) == 2 * len(GROUPINGS) * len(COEFFICIENTS)
     for entry in document["results"]:
         scores = METRIC if entry["metric"] == "follows" else HUMAN
@@ -282,6 +286,7 @@ def test_version(capsys):
 
 def test_python_dash_m_runs_the_command(capsys, grid, monkeypatch):
     arguments = ["correlate", str(grid), "--grouping", "system", "--coefficient", "pearson"]
+    arguments += ["--resamples", "0"]
     monkeypatch.setattr(sys, "argv", ["metaeval", *arguments])
     with pytest.raises(SystemExit) as raised:
         runpy.run_module("metaeval", run_name="__main__")
@@ -291,7 +296,17 @@ def test_python_dash_m_runs_the_command(capsys, grid, monkeypatch):
 
 def test_module_entry_point_on_the_example_file():
     completed = subprocess.run(
-        [sys.executable, "-m", "metaeval", "correlate", str(EXAMPLE), "--format", "json"],
+        [
+            sys.executable,
+            "-m",
+            "metaeval",
+            "correlate",
+            str(EXAMPLE),
+            "--format",
+            "json",
+            "--resamples",
+            "0",
+        ],
         capture_output=True,
         text=True,
         check=True,
@@ -301,3 +316,236 @@ def test_module_entry_point_on_the_example_file():
     assert document["human"]["annotators"] == ["ann_1", "ann_2"]
     assert {entry["metric"] for entry in document["results"]} == {"metric_a", "metric_b"}
     assert all(entry["n_undefined"] == 0 for entry in document["results"])
+
+
+# Intervals and the commands added after correlate ----------------------------------------
+
+
+@pytest.fixture
+def panel(tmp_path) -> Path:
+    """Five systems by twelve items, three annotators on a 1-5 scale, three metrics."""
+    rng = np.random.default_rng(77)
+    quality = rng.normal(size=(5, 1)) + rng.normal(size=(5, 12))
+    lines = []
+    for system in range(5):
+        for item in range(12):
+            q = quality[system, item]
+            ratings = {
+                f"ann_{k}": int(np.clip(np.rint(3 + q + 0.5 * rng.normal()), 1, 5))
+                for k in (1, 2, 3)
+            }
+            record = {
+                "item": f"doc_{item}",
+                "system": f"sys_{system}",
+                "human": ratings,
+                "metrics": {
+                    "good": round(float(q + 0.3 * rng.normal()), 3),
+                    "poor": round(float(q + 3.0 * rng.normal()), 3),
+                    "grader": int(np.clip(np.rint(3 + 0.5 * q), 2, 4)),
+                },
+            }
+            lines.append(json.dumps(record))
+    path = tmp_path / "panel.jsonl"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return path
+
+
+def interval_cell(cell: str) -> tuple[float, float, float]:
+    value, bounds = cell.split(" [")
+    low, high = bounds.rstrip("]").split(", ")
+    return float(value), float(low), float(high)
+
+
+def test_correlate_prints_intervals_by_default_settings(capsys, panel):
+    arguments = ["correlate", panel, "--metric", "good", "--coefficient", "kendall_b"]
+    status, out, _ = run(capsys, *arguments, "--resamples", "50", "--seed", "4")
+    assert status == 0
+    assert (
+        "- intervals: 95% bootstrap percentile, 50 resamples, systems and items resampled, seed 4"
+        in out
+    )
+    again = run(capsys, *arguments, "--resamples", "50", "--seed", "4")[1]
+    assert again == out
+    other = run(capsys, *arguments, "--resamples", "50", "--seed", "5")[1]
+    assert other != out
+    rows = table_rows(out)[2:]
+    assert [row[1] for row in rows] == list(GROUPINGS)
+    for row in rows:
+        value, low, high = interval_cell(row[2])
+        assert low <= value <= high
+    items_only = run(
+        capsys, *arguments, "--resamples", "50", "--resample", "items", "--confidence", "0.8"
+    )[1]
+    assert (
+        "- intervals: 80% bootstrap percentile, 50 resamples, items resampled, systems fixed"
+        in items_only
+    )
+
+    status, out, _ = run(capsys, *arguments, "--resamples", "50", "--seed", "4", "--format", "json")
+    document = json.loads(out)
+    assert document["resampling"] == {
+        "resample": "both",
+        "n_resamples": 50,
+        "confidence": 0.95,
+        "seed": 4,
+    }
+    for entry, row in zip(document["results"], rows, strict=True):
+        value, low, high = interval_cell(row[2])
+        assert entry["value"] == pytest.approx(value, abs=5e-4)
+        assert entry["interval"]["low"] == pytest.approx(low, abs=5e-4)
+        assert entry["interval"]["high"] == pytest.approx(high, abs=5e-4)
+
+
+def test_correlate_with_tie_calibration(capsys, panel):
+    status, out, _ = run(
+        capsys,
+        "correlate",
+        panel,
+        "--metric",
+        "good",
+        "--coefficient",
+        "pairwise_accuracy",
+        "--coefficient",
+        "pairwise_accuracy_calibrated",
+        "--grouping",
+        "by_item",
+    )
+    assert status == 0
+    row = table_rows(out)[2]
+    plain = float(row[2])
+    calibrated, epsilon = row[3].split(" (eps ")
+    assert float(calibrated) >= plain
+    assert float(epsilon.rstrip(")")) >= 0
+    assert "eps: tie calibration threshold" in out
+
+
+def test_compare(capsys, panel):
+    arguments = ["compare", panel, "--metric", "good", "--metric", "poor", "--grouping", "pooled"]
+    status, out, _ = run(
+        capsys,
+        *arguments,
+        "--coefficient",
+        "pearson",
+        "--coefficient",
+        "kendall_b",
+        "--resamples",
+        "80",
+    )
+    assert status == 0
+    assert out.startswith("# Differences between metrics\n")
+    rows = table_rows(out)
+    assert rows[0][:4] == ["metric a", "metric b", "grouping", "coefficient"]
+    pearson_row, kendall_row = rows[2], rows[3]
+    assert pearson_row[:4] == ["good", "poor", "pooled", "pearson"]
+    difference, low, high = interval_cell(pearson_row[6])
+    assert difference == pytest.approx(float(pearson_row[4]) - float(pearson_row[5]), abs=2e-3)
+    assert 0 < low <= difference <= high
+    # 80 resamples: the smallest two-sided bootstrap p is 2/81, the smallest permutation p 1/81.
+    assert pearson_row[7:9] == ["0.025", "0.012"]
+    assert pearson_row[9] == "<0.001"
+    assert kendall_row[9] == "-"
+    assert "p Williams: Williams test for dependent Pearson correlations" in out
+
+    status, out, _ = run(
+        capsys,
+        *arguments,
+        "--coefficient",
+        "pearson",
+        "--resamples",
+        "30",
+        "--permutations",
+        "0",
+        "--format",
+        "json",
+    )
+    entry = json.loads(out)["comparisons"][0]
+    assert entry["metric_a"] == "good" and entry["label"] == GROUPINGS["pooled"]
+    assert entry["difference"] == pytest.approx(entry["value_a"] - entry["value_b"])
+    assert entry["paired_bootstrap"]["n_resamples"] == 30
+    assert "permutation" not in entry
+    assert entry["williams"]["df"] == 5 * 12 - 3
+
+    point = run(capsys, *arguments, "--permutations", "0")[1]
+    assert table_rows(point)[2][7:] == ["n/a", "n/a", "-"]
+    status, _, err = run(capsys, "compare", panel, "--metric", "good")
+    assert (status, err) == (2, "metaeval: error: comparing needs at least two metrics\n")
+
+
+def test_scale(capsys, panel):
+    status, out, _ = run(capsys, "scale", panel, "--metric", "grader", "--resamples", "40")
+    assert status == 0
+    assert out.startswith("# Scale use and ordinal agreement\n")
+    assert "Scale: 1 to 5 in steps of 1." in out
+    tables = table_rows(out)
+    agreement = dict(zip(tables[0], tables[2], strict=True))
+    assert agreement["grader"] == "grader" and agreement["outputs"] == "60"
+    for name in ("exact", "adjacent", "quadratic weighted kappa", "sd ratio"):
+        value, low, high = interval_cell(agreement[name])
+        assert low <= value <= high
+    usage = {row[0]: row for row in tables if row[0] in ("human", "grader") and len(row) == 9}
+    assert usage["grader"][1] == "3"  # the grader only uses 2, 3 and 4
+    assert usage["grader"][-1] == "0.000" and usage["human"][-1] == "-"
+    assert float(agreement["sd ratio"].split(" ")[0]) < 1
+    assert "| scores | 1 | 2 | 3 | 4 | 5 |" in out
+
+    status, out, _ = run(
+        capsys, "scale", panel, "--metric", "grader", "--scale", "2", "4", "--format", "json"
+    )
+    entry = json.loads(out)["scale"][0]
+    assert (entry["grader"], entry["low"], entry["high"]) == ("grader", 2.0, 4.0)
+    assert [point["score"] for point in entry["distribution"]] == [2.0, 3.0, 4.0]
+    assert sum(point["grader"] for point in entry["distribution"]) == pytest.approx(1.0)
+    assert "intervals" not in entry
+
+
+def test_ceiling(capsys, panel):
+    arguments = ["ceiling", panel, "--metric", "good", "--grouping", "pooled"]
+    status, out, _ = run(capsys, *arguments, "--resamples", "40")
+    assert status == 0
+    rows = table_rows(out)[2:]
+    assert [row[2] for row in rows] == ["human ceiling", "ann_1", "ann_2", "ann_3", "good"]
+    ceiling, low, high = interval_cell(rows[0][3])
+    assert low <= ceiling <= high
+    assert ceiling == pytest.approx(np.mean([float(row[3]) for row in rows[1:4]]), abs=2e-3)
+    assert "one annotator fewer than the full panel" in out
+
+    status, out, _ = run(capsys, *arguments, "--format", "json", "--annotators", "ann_[12]")
+    entry = json.loads(out)["ceiling"][0]
+    assert entry["annotators"] == ["ann_1", "ann_2"]
+    assert len(entry["per_annotator"]) == 2
+    assert set(entry["metrics"]) == {"good"}
+    status, _, err = run(capsys, *arguments, "--annotators", "ann_1")
+    assert (status, err) == (
+        2,
+        "metaeval: error: the human ceiling needs at least two annotators\n",
+    )
+
+
+def test_report_has_every_section(capsys, panel, tmp_path):
+    arguments = ["report", panel, "--coefficient", "kendall_b", "--grouping", "system"]
+    status, out, _ = run(capsys, *arguments, "--grader", "grader", "--resamples", "20")
+    assert status == 0
+    headings = [line for line in out.splitlines() if line.startswith("#")]
+    assert headings == [
+        "# Metric against human ratings",
+        "## Correlation",
+        "## Differences between metrics",
+        "## Human ceiling",
+        "## Scale use and ordinal agreement",
+    ]
+    target = tmp_path / "report.json"
+    status, out, _ = run(capsys, *arguments, "--format", "json", "--output", target)
+    assert (status, out) == (0, "")
+    document = json.loads(target.read_text(encoding="utf-8"))
+    assert {"results", "comparisons", "ceiling"} <= set(document)
+    assert "scale" not in document
+    assert len(document["comparisons"]) == 3  # three metrics give three pairs
+    status, _, err = run(capsys, *arguments, "--grader", "absent")
+    assert status == 2 and "unknown metric 'absent'" in err
+
+
+def test_invalid_resampling_options(capsys, panel):
+    status, _, err = run(capsys, "correlate", panel, "--resamples", "-1")
+    assert (status, err) == (2, "metaeval: error: --resamples must not be negative\n")
+    status, _, err = run(capsys, "correlate", panel, "--confidence", "1.5")
+    assert (status, err) == (2, "metaeval: error: --confidence must be between 0 and 1\n")
